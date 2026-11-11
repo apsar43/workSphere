@@ -28,6 +28,7 @@ management:
       show-details: never
 
 server:
+  port: ${PORT:8080}
   error:
     include-message: never
     include-stacktrace: never
@@ -37,3 +38,7 @@ logging:
     root: INFO
     com.worksphere: INFO
     org.hibernate.SQL: WARN
+
+worksphere:
+  cors:
+    allowed-origins: ${FRONTEND_ORIGIN:http://localhost:5173}
