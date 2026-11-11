@@ -12,6 +12,8 @@
 **Target Scale:** Enterprise applications supporting 100,000+ registered users    
 **Architecture Philosophy:** Security First, Scalability, Performance, Maintainability, Reliability
 
+**Documentation status:** Proposed architecture baseline; no application is implemented. Start with the [documentation index](docs/README.md) and [ADR index](docs/adr/README.md). Human review is required before ADRs become Accepted or database migrations are generated.
+
 ---
 
 # 1. About WorkSphere
@@ -767,11 +769,10 @@ WorkSphere
 ├── authorization
 ├── project
 ├── task
-├── collaboration
-├── notification
-├── audit
-└── analytics
+└── audit
 ```
+
+Collaboration, general notifications and analytics are later-release modules. Release 1 includes only the reliable transactional email delivery needed for verification, password reset and invitations.
 
 Each module owns its business responsibilities.
 
@@ -821,10 +822,7 @@ backend/
 │   │   │       ├── authorization/
 │   │   │       ├── project/
 │   │   │       ├── task/
-│   │   │       ├── collaboration/
-│   │   │       ├── notification/
-│   │   │       ├── audit/
-│   │   │       └── analytics/
+│   │   │       └── audit/
 │   │   │
 │   │   └── resources/
 │   │       ├── application.yml
@@ -927,10 +925,7 @@ frontend/
 │   │   ├── organization/
 │   │   ├── members/
 │   │   ├── projects/
-│   │   ├── tasks/
-│   │   ├── collaboration/
-│   │   ├── notifications/
-│   │   └── analytics/
+│   │   └── tasks/
 │   │
 │   ├── shared/
 │   │   ├── components/
@@ -1007,14 +1002,11 @@ All business APIs should use a consistent versioned prefix.
 POST /api/v1/auth/register
 POST /api/v1/auth/login
 POST /api/v1/auth/logout
-POST /api/v1/auth/refresh
 POST /api/v1/auth/verify-email
 POST /api/v1/auth/forgot-password
 POST /api/v1/auth/reset-password
 GET  /api/v1/users/me
 ```
-
-The refresh endpoint applies only if the selected authentication design requires refresh tokens. It is not mandatory for a server-managed session architecture.
 
 ### Organizations
 
@@ -1047,7 +1039,6 @@ POST   /api/v1/projects/{projectId}/tasks
 GET    /api/v1/projects/{projectId}/tasks
 GET    /api/v1/tasks/{taskId}
 PATCH  /api/v1/tasks/{taskId}
-POST   /api/v1/tasks/{taskId}/comments
 GET    /api/v1/tasks/{taskId}/history
 ```
 
@@ -1181,8 +1172,9 @@ WorkSphere must establish a reliable and secure identity for every user.
 - Session revocation
 - Login history
 - Account recovery
-- Multi-factor authentication
 - Suspicious login detection
+
+Multi-factor authentication and enterprise identity federation are deferred beyond Release 1.
 
 ## 13.2 Password Security
 
@@ -1205,7 +1197,7 @@ Passwords should never be encrypted for later recovery. They should be securely 
 
 ## 13.3 Browser Authentication Strategy
 
-The initial browser authentication design will favor a server-managed session or a Backend-for-Frontend approach.
+The initial browser authentication design uses a server-managed opaque session as specified by [ADR-005](docs/adr/ADR-005-server-managed-browser-sessions.md).
 
 Preferred browser controls:
 
@@ -1221,7 +1213,7 @@ Preferred browser controls:
 
 If WorkSphere later supports native mobile clients or external third-party API consumers, a separate OAuth 2.0 / OpenID Connect design can be introduced.
 
-The exact authentication mechanism, cookie policy, session persistence, and deployment origin strategy must be finalized in the authentication architecture milestone.
+Timeouts, limits, CSRF implementation and deployment-origin details remain subject to human approval before implementation.
 
 Do not assume JWT in localStorage is an acceptable enterprise security design.
 
@@ -1427,19 +1419,20 @@ PostgreSQL is the source of truth for transactional business data.
 
 ## 16.1 Initial Logical Database Entities
 
+The authoritative Release 1 physical baseline is [the database design](docs/er-diagram/erd.md). The summary below intentionally excludes deferred product features.
+
 ### Identity
 
 - users
 - user_sessions
-- user_security_events
 - email_verification_tokens
 - password_reset_tokens
 
 ### Organization
 
 - organizations
-- organization_memberships
-- organization_invitations
+- memberships
+- invitations
 
 ### Authorization
 
@@ -1456,29 +1449,14 @@ PostgreSQL is the source of truth for transactional business data.
 ### Tasks
 
 - tasks
-- task_comments
-- task_labels
-- task_dependencies
 - task_history
-
-### Collaboration
-
-- discussions
-- messages
-- mentions
-
-### Notifications
-
-- notifications
-- notification_preferences
-- notification_delivery_attempts
 
 ### Audit and Events
 
-- audit_events
+- audit_logs
 - outbox_events
 
-These are logical starting entities. The final ER diagram and physical schema will be designed and reviewed before implementing the corresponding modules.
+The outbox is introduced with the first reliable verification, password-reset or invitation email workflow. It is a proposed design, not an implemented component. Comments, teams, labels, dependencies, general notifications, chat and analytics are deferred.
 
 ## 16.2 Database Standards
 
@@ -1830,6 +1808,23 @@ However, 100,000 registered users does not mean 100,000 concurrent users.
 
 Actual infrastructure sizing must be based on workload measurements.
 
+The 100,000 registered-user target is a product aspiration, not a verified capacity. Until representative load and recovery tests run, these are provisional planning assumptions rather than guarantees:
+
+| Dimension | Provisional assumption |
+|---|---|
+| Organizations | 5,000 registered; 1,000 monthly active |
+| Active users | 25,000 monthly active out of 100,000 registered |
+| Peak concurrent sessions | 2,000 |
+| Largest tenant | 10,000 memberships; 2,000 concurrently active users |
+| Projects and tasks | Up to 10,000 projects and 2,000,000 retained tasks in the largest tenant |
+| Request rate | 250 requests/second sustained; 750 requests/second short peak platform-wide |
+| Latency | P95 under 300 ms and P99 under 1 second for ordinary non-reporting APIs, excluding external email latency |
+| Availability | Provisional 99.9% monthly service objective until a formal SLO is approved |
+| Recovery | Proposed RPO 5 minutes and RTO 60 minutes |
+| Retention | Active customer lifecycle; security audit at least 365 days provisionally; successful outbox 30 days and failed outbox 90 days, subject to legal/customer approval |
+
+Dataset shape, hot-tenant behavior, query plans, connection limits, failure recovery and backup restoration must be measured in a production-like environment before making a capacity or SLO claim.
+
 ## 21.1 Backend Scalability
 
 Design for:
@@ -2140,8 +2135,9 @@ A milestone must pass its acceptance criteria before the next milestone begins.
 - Define primary and foreign keys.
 - Define tenant constraints.
 - Define indexes.
-- Implement initial migrations.
-- Establish architecture tests.
+- Review and approve proposed ADRs.
+- Prepare the first small Flyway migrations only after approval.
+- Establish architecture-test foundations.
 
 ## Milestone 3 — Identity and Authentication
 
@@ -2182,9 +2178,7 @@ A milestone must pass its acceptance criteria before the next milestone begins.
 - Task updates.
 - Task status.
 - Task priorities.
-- Task comments.
 - Task history.
-- Task dependencies.
 
 ## Milestone 7 — Frontend Application
 
@@ -2200,12 +2194,14 @@ A milestone must pass its acceptance criteria before the next milestone begins.
 
 ## Milestone 8 — Collaboration and Notifications
 
+- Teams.
 - Comments.
 - Mentions.
 - In-app notifications.
-- Email notifications.
+- Advanced email notifications.
 - Activity feed.
 - Background processing.
+- Attachments, chat and task dependencies as prioritized.
 
 ## Milestone 9 — Security Hardening
 
@@ -2265,19 +2261,20 @@ Kafka and WebSockets may be introduced if justified by product and operational r
 
 The first release should contain:
 
-- User registration and authentication
+- User registration and login
+- Email verification
+- Server-managed opaque sessions
+- Logout and password reset
 - Organization creation
-- Employee invitations
-- Membership management
-- Role-based permissions
-- Strong tenant isolation
-- Project management
-- Task management
-- Basic comments
-- Basic audit events
-- Email notifications
-- React dashboard
-- Secure application deployment
+- Invitations and memberships
+- Organization-scoped RBAC
+- Projects and project membership
+- Tasks and assignments
+- Minimal audit history
+- Basic React dashboard
+- Tenant-isolation and security tests
+
+Reliable transactional email for verification, reset and invitations is supporting infrastructure. Teams, comments, attachments, chat, analytics, MFA, SSO, Redis, Kafka and WebSockets are not Release 1 product scope.
 
 The first release must not compromise security to deliver features faster.
 
@@ -2285,6 +2282,7 @@ The first release must not compromise security to deliver features faster.
 
 Potential features:
 
+- Teams and comments
 - Redis caching where justified
 - Kafka-based asynchronous workflows where justified
 - WebSocket-based real-time updates
@@ -2317,19 +2315,16 @@ Initial decisions:
 
 | ADR | Decision | Status |
 |---|---|---|
-| ADR-001 | Modular Monolith | Accepted |
-| ADR-002 | Clean Architecture | Accepted |
-| ADR-003 | Java 21 + Spring Boot | Accepted |
-| ADR-004 | PostgreSQL | Accepted |
-| ADR-005 | Flyway | Accepted |
-| ADR-006 | Multi-Tenant SaaS | Accepted |
-| ADR-007 | Shared Database / Shared Schema Initially | Accepted |
-| ADR-008 | React + TypeScript | Accepted |
-| ADR-009 | Secure Browser Authentication Strategy | Design to finalize |
-| ADR-010 | Redis | Future |
-| ADR-011 | Kafka | Future |
-| ADR-012 | WebSockets | Future |
-| ADR-013 | Dedicated API Gateway | Evaluate when justified |
+| [ADR-001](docs/adr/ADR-001-modular-monolith.md) | Modular monolith | Proposed |
+| [ADR-002](docs/adr/ADR-002-shared-schema-multi-tenancy.md) | Shared-schema multi-tenancy | Proposed |
+| [ADR-003](docs/adr/ADR-003-global-users-and-memberships.md) | Global users and memberships | Proposed |
+| [ADR-004](docs/adr/ADR-004-global-permissions-organization-roles.md) | Global permissions and organization roles | Proposed |
+| [ADR-005](docs/adr/ADR-005-server-managed-browser-sessions.md) | Server-managed browser sessions | Proposed |
+| [ADR-006](docs/adr/ADR-006-tenant-aware-composite-foreign-keys.md) | Tenant-aware composite foreign keys | Proposed |
+| [ADR-007](docs/adr/ADR-007-flyway-database-migrations.md) | Flyway migrations | Proposed |
+| [ADR-008](docs/adr/ADR-008-transactional-outbox-strategy.md) | Transactional outbox strategy | Proposed |
+| [ADR-009](docs/adr/ADR-009-mvp-scope.md) | MVP scope | Proposed |
+| [ADR-010](docs/adr/ADR-010-pragmatic-clean-architecture.md) | Pragmatic Clean Architecture | Proposed |
 
 No major architectural change should happen silently.
 

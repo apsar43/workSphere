@@ -88,11 +88,11 @@ The system must support:
 | FR-08 | Project membership |
 | FR-09 | Task creation and assignment |
 | FR-10 | Task status and priority management |
-| FR-11 | Task comments and discussions |
-| FR-12 | Notifications |
+| FR-11 | Reliable verification, password-reset and invitation email delivery |
+| FR-12 | Basic React dashboard |
 | FR-13 | Audit logging |
-| FR-14 | Project and task reporting |
-| FR-15 | Administrative operations |
+
+Task comments, discussions, general notifications, reporting/analytics and advanced administration are product requirements for later releases, not Release 1 requirements.
 
 ## 3.2 Non-Functional Requirements
 
@@ -110,7 +110,24 @@ The system must support:
 | Compatibility | Modern supported browsers |
 | Accessibility | Accessible and responsive frontend |
 
-These are proposed engineering targets. They must be validated through workload modelling, testing and production measurements.
+These are proposed engineering targets. They must be validated through workload modelling, testing and production measurements. The 100,000 registered-user aspiration is not a concurrency or throughput guarantee.
+
+### 3.3 Provisional workload assumptions
+
+| Dimension | Assumption for initial testing |
+|---|---|
+| Organizations | 5,000 registered; 1,000 monthly active |
+| Active users | 25,000 monthly active out of 100,000 registered |
+| Peak concurrent sessions | 2,000 |
+| Largest tenant | 10,000 memberships; 2,000 concurrently active users |
+| Projects/tasks | 10,000 projects and 2,000,000 retained tasks in the largest tenant |
+| Request rate | 250 requests/second sustained; 750 requests/second short peak |
+| Latency | Ordinary API P95 below 300 ms and P99 below 1 second, excluding external email |
+| Availability | Provisional 99.9% monthly service objective |
+| Recovery | Proposed RPO 5 minutes and RTO 60 minutes |
+| Retention | Active customer lifecycle; audit at least 365 days provisionally; outbox success 30 days/failure 90 days |
+
+These values size test scenarios only. They are not tested guarantees. Hot-tenant distribution, query plans, connection limits, restore time and failure behavior must be measured in a production-like environment. Retention requires legal/customer approval.
 
 ---
 
@@ -341,10 +358,9 @@ The backend is deployed as one application but organized as independent business
 | Authorization | Roles, permissions and policies |
 | Project | Projects and project members |
 | Task | Tasks, assignments and history |
-| Collaboration | Comments, discussions and mentions |
-| Notification | Notification creation and delivery |
 | Audit | Business and security event history |
-| Analytics | Reports and metrics |
+
+Collaboration, general notifications and analytics are deferred beyond Release 1. Reliable email for verification, reset and invitations is delivered through the identity/organization workflows and transactional outbox.
 
 ## 7.3 Dependency Direction
 
@@ -461,9 +477,9 @@ Examples:
 
 Authentication establishes the identity of the requester.
 
-Initial browser strategy:
+Initial browser strategy, detailed by [ADR-005](../adr/ADR-005-server-managed-browser-sessions.md):
 
-- Server-managed session or approved BFF-style architecture.
+- Server-managed opaque session stored in PostgreSQL for multi-instance consistency.
 - Secure HttpOnly cookie.
 - Secure cookie transport.
 - Appropriate SameSite policy.
@@ -472,7 +488,7 @@ Initial browser strategy:
 - Session revocation.
 - Session rotation where appropriate.
 
-The exact session implementation and persistence mechanism must be approved in the identity design milestone.
+Timeout values, rate limits, CSRF mechanism and deployment-specific cookie origin policy remain subject to human approval.
 
 Avoid exposing long-lived credentials to JavaScript.
 
@@ -602,12 +618,12 @@ It will store:
 - Permissions.
 - Projects.
 - Tasks.
-- Comments.
 - Invitations.
 - Sessions.
-- Notifications.
 - Audit events.
 - Outbox events.
+
+The outbox is introduced with the first reliable asynchronous verification, reset or invitation email workflow. It is designed, not currently implemented. Comments, teams, general notifications and analytics are deferred.
 
 ## 11.2 Logical Database Relationship Diagram
 
@@ -627,14 +643,16 @@ erDiagram
     MEMBERSHIPS ||--o{ PROJECT_MEMBERS : participates
 
     PROJECTS ||--o{ TASKS : contains
-    TASKS ||--o{ TASK_COMMENTS : has
-    USERS ||--o{ TASK_COMMENTS : writes
+    TASKS o|--o{ TASKS : parent_of
+    TASKS ||--o{ TASK_ASSIGNEES : assigned
+    MEMBERSHIPS ||--o{ TASK_ASSIGNEES : receives
 
     USERS ||--o{ USER_SESSIONS : owns
     ORGANIZATIONS ||--o{ AUDIT_EVENTS : records
+    MEMBERSHIPS o|--o{ AUDIT_EVENTS : performs
 ```
 
-This is the initial logical model. Exact columns, constraints, indexes, ownership rules and relationship cardinalities will be finalized in the database design milestone.
+Permissions are global predefined capabilities; roles are organization-owned. The authoritative keys, actor references and physical relationships are in the [database design](../er-diagram/erd.md).
 
 ## 11.3 Database Design Principles
 
@@ -803,10 +821,7 @@ backend/
         │       ├── authorization/
         │       ├── project/
         │       ├── task/
-        │       ├── collaboration/
-        │       ├── notification/
-        │       ├── audit/
-        │       └── analytics/
+        │       └── audit/
         │
         └── resources/
             ├── application.yml
@@ -961,16 +976,15 @@ sequenceDiagram
     API->>UC: RegisterUserCommand
     UC->>UC: Validate business rules
     UC->>UC: Hash password
-    UC->>DB: Create user and verification record
+    UC->>DB: Create user, verification record and outbox event atomically
     DB-->>UC: Transaction committed
     UC-->>API: Registration result
     API-->>FE: Registration response
-    UC-->>EMAIL: Trigger verification delivery after commit
+    EMAIL->>DB: Worker claims outbox event after commit
+    EMAIL->>EMAIL: Deliver idempotently with retry policy
 ```
 
-Email delivery must not determine whether the user database transaction is committed.
-
-A reliable delivery mechanism should be added when the notification workflow is implemented.
+Email delivery does not determine whether the user transaction commits. The outbox is introduced with this first reliable workflow as specified by [ADR-008](../adr/ADR-008-transactional-outbox-strategy.md); this is a design, not a claim of implementation.
 
 ## 15.5 Login Flow
 
@@ -1160,8 +1174,9 @@ TASK_VIEW
 TASK_UPDATE
 TASK_ASSIGN
 TASK_DELETE
-TASK_COMMENT
 ```
+
+Comment permissions are added with the deferred comments capability.
 
 ## 17.3 Authorization Service
 
@@ -1338,7 +1353,6 @@ Before assigning a task:
 6. Verify project membership if required by project policy.
 7. Update task.
 8. Record history and audit event.
-9. Schedule notification delivery.
 
 ## 19.4 Task Assignment Flow
 
@@ -1413,7 +1427,6 @@ Task update, task history and required outbox records should be handled transact
 | GET | /api/v1/projects/{id}/tasks | List tasks |
 | GET | /api/v1/tasks/{id} | Task details |
 | PATCH | /api/v1/tasks/{id} | Update task |
-| POST | /api/v1/tasks/{id}/comments | Add comment |
 | GET | /api/v1/tasks/{id}/history | Task history |
 
 All endpoints must implement the applicable authentication, authorization, validation, tenant isolation and audit rules.
@@ -1422,163 +1435,9 @@ All endpoints must implement the applicable authentication, authorization, valid
 
 # 21. LLD — Database Schema Design Baseline
 
-The following tables form the initial logical schema.
+The authoritative logical and physical baseline is [the database design and ERD](../er-diagram/erd.md). It defines normalized identity keys, lifecycle fields, global permissions, organization roles, tenant-owned membership actors, composite foreign keys, multi-assignee tasks, same-project parent-task integrity, audit controls, outbox behavior, delete rules and index candidates.
 
-## 21.1 Users
-
-```sql
-CREATE TABLE users (
-    id UUID PRIMARY KEY,
-    email VARCHAR(320) NOT NULL,
-    password_hash VARCHAR(255) NOT NULL,
-    first_name VARCHAR(100) NOT NULL,
-    last_name VARCHAR(100) NOT NULL,
-    status VARCHAR(30) NOT NULL,
-    email_verified_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL,
-    updated_at TIMESTAMPTZ NOT NULL,
-    CONSTRAINT uq_users_email UNIQUE (email)
-);
-```
-
-Email normalization and case-insensitive uniqueness must be finalized before migration.
-
-## 21.2 Organizations
-
-```sql
-CREATE TABLE organizations (
-    id UUID PRIMARY KEY,
-    name VARCHAR(200) NOT NULL,
-    slug VARCHAR(150) NOT NULL,
-    status VARCHAR(30) NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL,
-    updated_at TIMESTAMPTZ NOT NULL,
-    CONSTRAINT uq_organizations_slug UNIQUE (slug)
-);
-```
-
-Slug uniqueness may be global or scoped depending on the final product requirements.
-
-## 21.3 Memberships
-
-```sql
-CREATE TABLE memberships (
-    id UUID PRIMARY KEY,
-    organization_id UUID NOT NULL,
-    user_id UUID NOT NULL,
-    status VARCHAR(30) NOT NULL,
-    joined_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL,
-
-    CONSTRAINT fk_membership_organization
-        FOREIGN KEY (organization_id)
-        REFERENCES organizations(id),
-
-    CONSTRAINT fk_membership_user
-        FOREIGN KEY (user_id)
-        REFERENCES users(id),
-
-    CONSTRAINT uq_organization_user
-        UNIQUE (organization_id, user_id),
-
-    CONSTRAINT uq_membership_tenant_id
-        UNIQUE (organization_id, id)
-);
-```
-
-## 21.4 Projects
-
-```sql
-CREATE TABLE projects (
-    id UUID PRIMARY KEY,
-    organization_id UUID NOT NULL,
-    name VARCHAR(200) NOT NULL,
-    description TEXT,
-    status VARCHAR(30) NOT NULL,
-    priority VARCHAR(30) NOT NULL,
-    created_by_membership_id UUID NOT NULL,
-    start_date DATE,
-    due_date DATE,
-    created_at TIMESTAMPTZ NOT NULL,
-    updated_at TIMESTAMPTZ NOT NULL,
-
-    CONSTRAINT fk_project_organization
-        FOREIGN KEY (organization_id)
-        REFERENCES organizations(id),
-
-    CONSTRAINT fk_project_creator_membership
-        FOREIGN KEY (
-            organization_id,
-            created_by_membership_id
-        )
-        REFERENCES memberships(organization_id, id),
-
-    CONSTRAINT uq_project_tenant_id
-        UNIQUE (organization_id, id)
-);
-```
-
-## 21.5 Tasks
-
-```sql
-CREATE TABLE tasks (
-    id UUID PRIMARY KEY,
-    organization_id UUID NOT NULL,
-    project_id UUID NOT NULL,
-    title VARCHAR(300) NOT NULL,
-    description TEXT,
-    status VARCHAR(30) NOT NULL,
-    priority VARCHAR(30) NOT NULL,
-    assignee_membership_id UUID,
-    created_by_membership_id UUID NOT NULL,
-    due_at TIMESTAMPTZ,
-    version BIGINT NOT NULL DEFAULT 0,
-    created_at TIMESTAMPTZ NOT NULL,
-    updated_at TIMESTAMPTZ NOT NULL,
-
-    CONSTRAINT fk_task_project
-        FOREIGN KEY (organization_id, project_id)
-        REFERENCES projects(organization_id, id),
-
-    CONSTRAINT fk_task_assignee
-        FOREIGN KEY (organization_id, assignee_membership_id)
-        REFERENCES memberships(organization_id, id),
-
-    CONSTRAINT fk_task_creator
-        FOREIGN KEY (organization_id, created_by_membership_id)
-        REFERENCES memberships(organization_id, id)
-);
-```
-
-The schema should be extended with task member and assignment policies where required.
-
-## 21.6 Database Index Strategy
-
-Initial index candidates:
-
-```sql
-CREATE INDEX idx_memberships_user
-    ON memberships(user_id);
-
-CREATE INDEX idx_memberships_organization_status
-    ON memberships(organization_id, status);
-
-CREATE INDEX idx_projects_organization_status
-    ON projects(organization_id, status);
-
-CREATE INDEX idx_tasks_organization_project
-    ON tasks(organization_id, project_id);
-
-CREATE INDEX idx_tasks_organization_assignee
-    ON tasks(organization_id, assignee_membership_id);
-
-CREATE INDEX idx_tasks_organization_status
-    ON tasks(organization_id, status);
-```
-
-These are initial candidates. Indexes must be validated against actual queries and data distribution.
-
-Additional indexes, uniqueness rules, check constraints, delete policies and audit relationships must be included in the final database design.
+No SQL migration exists yet. SQL examples are intentionally not duplicated here so the system design cannot drift from the physical baseline. After human approval, Flyway migrations will be created incrementally and tested with PostgreSQL Testcontainers.
 
 ---
 
@@ -1713,7 +1572,7 @@ Audit records should have restricted update/delete permissions and appropriate r
 
 # 25. LLD — Notification Architecture
 
-Initially, notifications can use an application-managed asynchronous delivery process.
+Release 1 does not include a general notification product. Verification, password-reset and invitation email use an application-managed outbox worker. General in-app notifications and preferences are deferred.
 
 Responsibilities:
 
@@ -1728,15 +1587,15 @@ Example flow:
 
 ```mermaid
 sequenceDiagram
-    participant TASK as Task Module
+    participant ORG as Identity or Organization Module
     participant DB as PostgreSQL
     participant WORKER as Notification Worker
     participant EMAIL as Email Provider
-    participant USER as Employee
+    participant USER as User
 
-    TASK->>DB: Save task and notification intent
-    DB-->>TASK: Commit
-    WORKER->>DB: Fetch pending notification
+    ORG->>DB: Save business change and outbox event atomically
+    DB-->>ORG: Commit
+    WORKER->>DB: Safely claim pending event
     WORKER->>EMAIL: Send email
     EMAIL-->>WORKER: Delivery result
     WORKER->>DB: Update delivery status
@@ -1744,6 +1603,8 @@ sequenceDiagram
 ```
 
 Delivery must support retries, idempotency, monitoring and failure handling.
+
+Successful events are retained provisionally for 30 days and failed events for 90 days. Exhausted failures enter a terminal state, alert operators and permit controlled replay. Raw one-time invitation, reset and verification secrets are never placed in general event metadata or logs.
 
 Kafka may replace or extend the internal delivery mechanism in a later milestone.
 
@@ -1773,10 +1634,7 @@ frontend/src/
 │   ├── organization/
 │   ├── members/
 │   ├── projects/
-│   ├── tasks/
-│   ├── collaboration/
-│   ├── notifications/
-│   └── analytics/
+│   └── tasks/
 │
 ├── shared/
 │   ├── components/
@@ -1787,6 +1645,8 @@ frontend/src/
 │
 └── tests/
 ```
+
+Deferred collaboration, general notification and analytics features add modules only when their milestone begins; empty placeholder modules are not created in Release 1.
 
 ## 26.1 Example Frontend Components
 
@@ -1821,7 +1681,8 @@ Tasks:
 - TaskBoard
 - CreateTaskDialog
 - AssignTaskDialog
-- TaskComments
+
+Task comments are added in the deferred collaboration milestone.
 
 ## 26.2 Frontend Engineering Rules
 
@@ -1995,13 +1856,13 @@ Database high availability, load balancing, connection pooling, network access a
 |---|---|
 | M0 | Engineering governance and architecture documentation |
 | M1 | Windows development setup and project foundation |
-| M2 | Database ERD, migrations and module boundaries |
+| M2 | Approve ADRs/ERD, then create incremental migrations and module boundaries |
 | M3 | Identity and authentication |
 | M4 | Authorization and multi-tenancy |
 | M5 | Project management |
 | M6 | Task management |
 | M7 | React frontend integration |
-| M8 | Collaboration and notifications |
+| M8 | Deferred collaboration and general notifications |
 | M9 | Security hardening |
 | M10 | Performance testing |
 | M11 | Production deployment and operations |
@@ -2049,9 +1910,9 @@ Before implementation of a major module, review:
 - Changes reviewed.
 - Milestone completion report produced.
 
-# 32. Final Architecture Decisions
+# 32. Proposed Architecture Baseline
 
-The following decisions are accepted as the initial WorkSphere architecture baseline:
+The following decisions form the review baseline. They remain Proposed until humans approve the ADRs; this document does not mark them Accepted:
 
 1. Java 21 and Spring Boot for backend development.
 2. React and TypeScript for frontend development.
@@ -2062,7 +1923,7 @@ The following decisions are accepted as the initial WorkSphere architecture base
 7. Shared database and shared schema for initial multi-tenancy.
 8. Backend-enforced authentication and authorization.
 9. RBAC combined with resource-level authorization.
-10. Secure server-managed browser session strategy to be finalized during M3.
+10. Server-managed opaque browser sessions stored in PostgreSQL, with policy values finalized before implementation.
 11. Docker Compose for local infrastructure.
 12. Redis, Kafka and WebSockets deferred until justified.
 13. Dedicated API Gateway deferred until justified.

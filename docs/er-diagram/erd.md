@@ -1,97 +1,65 @@
-# WorkSphere – Database Design
-## Entity Relationship Diagram (ERD) and Physical Data Model
+# WorkSphere Database Design
 
-**Version:** 1.0  
-**Database:** PostgreSQL  
-**Architecture:** Modular Monolith  
-**Multi-tenancy:** Shared database, shared schema  
-**Backend:** Java 21 + Spring Boot + Spring Data JPA  
-**Migration strategy:** Flyway
+## Entity relationship diagram and physical-design baseline
 
----
+**Version:** 1.1 review baseline
 
-# 1. Database Design Principles
+**Status:** Proposed; no migrations have been generated
 
-The database must support:
+**Database:** PostgreSQL
 
-- Multiple independent organizations.
-- Users who may belong to multiple organizations.
-- Organization-specific roles and permissions.
-- Projects, project membership, tasks, assignments and comments.
-- Invitations and organization onboarding.
-- In-app and email notifications.
-- Security and business audit history.
-- Future scalability without prematurely introducing unnecessary infrastructure.
+**Multi-tenancy:** Shared database and shared schema
 
-### Important rules
+This document is authoritative for Release 1 tables, keys and tenant-aware relationships. It implements the proposed decisions in the [ADR index](../adr/README.md). Human approval is required before migrations are created.
 
-1. Use UUID primary keys for business entities.
-2. Use `organization_id` on organization-owned records.
-3. Enforce tenant consistency in database relationships using composite foreign keys where applicable.
-4. Never rely on frontend filtering for tenant security.
-5. Store timestamps in `TIMESTAMPTZ` using UTC.
-6. Store passwords using Argon2id hashes, never plaintext.
-7. Store only hashed authentication, invitation and password-reset tokens.
-8. Use Flyway for all schema changes.
-9. Do not use Hibernate `ddl-auto=update` in production.
-10. Use explicit constraints, indexes and unique rules.
+## 1. Design direction
 
----
+- Users are global identities; memberships connect them to organizations.
+- Permissions are global, predefined application capabilities and have no `organization_id`.
+- Roles belong to organizations; role assignments belong to memberships.
+- Projects and tasks are tenant-owned; tenant actors use membership references.
+- Tenant-owned parents expose `UNIQUE (organization_id, id)` for composite references.
+- Membership history is retained through lifecycle status.
+- Flyway is the only migration mechanism. Production Hibernate validates and never mutates schemas.
+- Timestamps are `TIMESTAMPTZ`; application/database operations use UTC.
+- UUIDs are identifiers, not authorization evidence.
 
-# 2. High-Level ERD
-
-The following diagram shows the main entities and their relationships.
+## 2. Release 1 ERD
 
 ```mermaid
 erDiagram
-    USERS ||--o{ MEMBERSHIPS : joins
-    ORGANIZATIONS ||--o{ MEMBERSHIPS : has
-    ORGANIZATIONS ||--o{ INVITATIONS : issues
-    USERS o|--o{ INVITATIONS : invites
-
-    ORGANIZATIONS ||--o{ ROLES : defines
-    ORGANIZATIONS ||--o{ PERMISSIONS : scopes
-    ROLES ||--o{ ROLE_PERMISSIONS : contains
-    PERMISSIONS ||--o{ ROLE_PERMISSIONS : assigned
-    MEMBERSHIPS ||--o{ MEMBERSHIP_ROLES : receives
-    ROLES ||--o{ MEMBERSHIP_ROLES : grants
-
-    ORGANIZATIONS ||--o{ TEAMS : owns
-    USERS ||--o{ TEAM_MEMBERS : participates
-    TEAMS ||--o{ TEAM_MEMBERS : includes
-
-    ORGANIZATIONS ||--o{ PROJECTS : owns
-    USERS ||--o{ PROJECTS : creates
-    PROJECTS ||--o{ PROJECT_MEMBERS : includes
-    USERS ||--o{ PROJECT_MEMBERS : participates
-
-    PROJECTS ||--o{ TASKS : contains
-    USERS ||--o{ TASKS : creates
-    TASKS ||--o{ TASK_ASSIGNEES : assigned
-    USERS ||--o{ TASK_ASSIGNEES : receives
-    TASKS ||--o{ TASK_COMMENTS : has
-    USERS ||--o{ TASK_COMMENTS : writes
-    TASKS ||--o{ TASK_LABEL_LINKS : tagged
-    TASK_LABELS ||--o{ TASK_LABEL_LINKS : applied
-
-    USERS ||--o{ USER_SESSIONS : owns
-    USERS ||--o{ NOTIFICATIONS : receives
-    ORGANIZATIONS ||--o{ AUDIT_LOGS : records
-    USERS o|--o{ AUDIT_LOGS : performs
-
-    USERS ||--o{ PASSWORD_RESET_TOKENS : requests
+    USERS ||--o{ USER_SESSIONS : authenticates
     USERS ||--o{ EMAIL_VERIFICATION_TOKENS : verifies
+    USERS ||--o{ PASSWORD_RESET_TOKENS : resets
+    USERS ||--o{ MEMBERSHIPS : joins
+    ORGANIZATIONS ||--o{ MEMBERSHIPS : contains
+    ORGANIZATIONS ||--o{ INVITATIONS : issues
+    MEMBERSHIPS ||--o{ INVITATIONS : creates
+    ORGANIZATIONS ||--o{ ROLES : owns
+    ROLES ||--o{ ROLE_PERMISSIONS : grants
+    PERMISSIONS ||--o{ ROLE_PERMISSIONS : defines
+    MEMBERSHIPS ||--o{ MEMBERSHIP_ROLES : receives
+    ROLES ||--o{ MEMBERSHIP_ROLES : assigned
+    ORGANIZATIONS ||--o{ PROJECTS : owns
+    MEMBERSHIPS ||--o{ PROJECTS : creates
+    PROJECTS ||--o{ PROJECT_MEMBERS : includes
+    MEMBERSHIPS ||--o{ PROJECT_MEMBERS : participates
+    PROJECTS ||--o{ TASKS : contains
+    TASKS o|--o{ TASKS : parent_of
+    MEMBERSHIPS ||--o{ TASKS : creates
+    TASKS ||--o{ TASK_ASSIGNEES : assigned
+    MEMBERSHIPS ||--o{ TASK_ASSIGNEES : receives
+    ORGANIZATIONS ||--o{ AUDIT_LOGS : records
+    MEMBERSHIPS o|--o{ AUDIT_LOGS : performs
+    USERS o|--o{ AUDIT_LOGS : platform_actor
+    ORGANIZATIONS ||--o{ OUTBOX_EVENTS : emits
 ```
 
-This is the logical overview. The detailed table definitions below establish the intended keys, constraints and tenant boundaries.
+`outbox_events` is introduced with the first reliable asynchronous email workflow; it is designed but not implemented. Task comments, labels, dependencies, teams, general notifications and analytics are deferred.
 
----
+## 3. Identity
 
-# 3. Identity and Authentication Tables
-
-## 3.1 `users`
-
-Stores global user identities.
+### `users`
 
 | Column | Type | Constraints |
 |---|---|---|
@@ -104,687 +72,192 @@ Stores global user identities.
 | display_name | VARCHAR(200) | NULL |
 | status | VARCHAR(30) | NOT NULL |
 | email_verified_at | TIMESTAMPTZ | NULL |
-| last_login_at | TIMESTAMPTZ | NULL |
 | created_at | TIMESTAMPTZ | NOT NULL |
 | updated_at | TIMESTAMPTZ | NOT NULL |
 | version | BIGINT | NOT NULL |
 
-**Notes:**
-- A user is a global identity, not an organization-specific identity.
-- A user can belong to multiple organizations.
-- `normalized_email` is generated consistently by application logic and uniquely constrained.
-- Suggested statuses: `PENDING_VERIFICATION`, `ACTIVE`, `LOCKED`, `DISABLED`.
-- Do not store a user's organization role directly in this table.
+Email normalization is application-owned and versioned: trim surrounding whitespace, reject invalid Unicode/control characters, split at the final `@`, lowercase the domain using locale-independent rules, and initially lowercase the local part for WorkSphere matching. Preserve the submitted display email. Do not add provider-specific dot or plus-address rules. Suggested statuses: `PENDING_VERIFICATION`, `ACTIVE`, `LOCKED`, `DISABLED`, `ERASURE_PENDING`, `ANONYMIZED`.
 
-## 3.2 `user_sessions`
-
-Stores server-managed login sessions.
+### `user_sessions`
 
 | Column | Type | Constraints |
 |---|---|---|
 | id | UUID | PK |
-| user_id | UUID | FK → users.id |
+| user_id | UUID | NOT NULL, FK → users.id |
 | token_hash | VARCHAR(255) | NOT NULL, UNIQUE |
 | created_at | TIMESTAMPTZ | NOT NULL |
-| expires_at | TIMESTAMPTZ | NOT NULL |
-| last_seen_at | TIMESTAMPTZ | NULL |
+| idle_expires_at | TIMESTAMPTZ | NOT NULL |
+| absolute_expires_at | TIMESTAMPTZ | NOT NULL |
+| last_seen_at | TIMESTAMPTZ | NOT NULL |
 | revoked_at | TIMESTAMPTZ | NULL |
+| revocation_reason | VARCHAR(50) | NULL |
 | ip_address | INET | NULL |
 | user_agent | TEXT | NULL |
 
-The browser receives a secure session cookie. The raw session secret must not be stored in this table.
+Check `idle_expires_at <= absolute_expires_at`. Authentication requires both expiries in the future and `revoked_at IS NULL`. The raw opaque token is returned only in the protected cookie and is never persisted or logged. See [ADR-005](../adr/ADR-005-server-managed-browser-sessions.md).
 
-## 3.3 `password_reset_tokens`
+### `email_verification_tokens` and `password_reset_tokens`
 
-| Column | Type | Constraints |
-|---|---|---|
-| id | UUID | PK |
-| user_id | UUID | FK → users.id |
-| token_hash | VARCHAR(255) | NOT NULL, UNIQUE |
-| expires_at | TIMESTAMPTZ | NOT NULL |
-| used_at | TIMESTAMPTZ | NULL |
-| created_at | TIMESTAMPTZ | NOT NULL |
+Both contain `id UUID PK`, `user_id UUID NOT NULL FK`, `token_hash VARCHAR(255) NOT NULL UNIQUE`, `expires_at TIMESTAMPTZ NOT NULL`, `consumed_at TIMESTAMPTZ NULL`, and `created_at TIMESTAMPTZ NOT NULL`.
 
-## 3.4 `email_verification_tokens`
+Consumption is one atomic conditional update requiring the matching hash, `consumed_at IS NULL`, and `expires_at > now()`. A unique constraint alone does not enforce single-use concurrency.
 
-| Column | Type | Constraints |
-|---|---|---|
-| id | UUID | PK |
-| user_id | UUID | FK → users.id |
-| token_hash | VARCHAR(255) | NOT NULL, UNIQUE |
-| expires_at | TIMESTAMPTZ | NOT NULL |
-| used_at | TIMESTAMPTZ | NULL |
-| created_at | TIMESTAMPTZ | NOT NULL |
+## 4. Organizations and memberships
 
----
-
-# 4. Organization and Multi-Tenancy Tables
-
-## 4.1 `organizations`
-
-Represents a customer organization or tenant.
+### `organizations`
 
 | Column | Type | Constraints |
 |---|---|---|
 | id | UUID | PK |
 | name | VARCHAR(200) | NOT NULL |
 | slug | VARCHAR(100) | NOT NULL |
+| normalized_slug | VARCHAR(100) | NOT NULL, UNIQUE |
 | status | VARCHAR(30) | NOT NULL |
 | timezone | VARCHAR(100) | NOT NULL |
 | created_at | TIMESTAMPTZ | NOT NULL |
 | updated_at | TIMESTAMPTZ | NOT NULL |
 | version | BIGINT | NOT NULL |
 
-Unique constraint: `UNIQUE(slug)` for the initial globally unique organization slug policy.
-
-Suggested statuses: `ACTIVE`, `SUSPENDED`, `CLOSED`.
-
-## 4.2 `memberships`
-
-Connects users to organizations.
-
-| Column | Type | Constraints |
-|---|---|---|
-| id | UUID | PK |
-| organization_id | UUID | FK → organizations.id |
-| user_id | UUID | FK → users.id |
-| status | VARCHAR(30) | NOT NULL |
-| joined_at | TIMESTAMPTZ | NULL |
-| created_at | TIMESTAMPTZ | NOT NULL |
-| updated_at | TIMESTAMPTZ | NOT NULL |
-
-Constraints:
-
-- `UNIQUE(organization_id, user_id)`
-- `UNIQUE(id, organization_id)` for tenant-aware composite references.
-
-Suggested statuses: `INVITED`, `ACTIVE`, `SUSPENDED`, `REMOVED`.
+Slugs are globally unique. Normalize with Unicode normalization, locale-independent lowercase, an approved ASCII transliteration/rejection policy, `[a-z0-9-]`, collapsed hyphens and no leading/trailing hyphen. The implementation and reserved-slug list must be shared by validation and tested before migration.
 
-A user may have one membership in several different organizations, but only one membership per organization.
+### `memberships`
 
-## 4.3 `invitations`
+Contains `id UUID PK`, `organization_id UUID NOT NULL FK`, `user_id UUID NOT NULL FK`, `status VARCHAR(30) NOT NULL`, `joined_at`, `removed_at`, `created_at`, `updated_at` as `TIMESTAMPTZ`, and `version BIGINT NOT NULL`.
 
-| Column | Type | Constraints |
-|---|---|---|
-| id | UUID | PK |
-| organization_id | UUID | FK → organizations.id |
-| invited_by_user_id | UUID | FK → users.id |
-| email | VARCHAR(320) | NOT NULL |
-| normalized_email | VARCHAR(320) | NOT NULL |
-| token_hash | VARCHAR(255) | NOT NULL, UNIQUE |
-| status | VARCHAR(30) | NOT NULL |
-| expires_at | TIMESTAMPTZ | NOT NULL |
-| accepted_at | TIMESTAMPTZ | NULL |
-| created_at | TIMESTAMPTZ | NOT NULL |
+Constraints: `UNIQUE (organization_id, user_id)` and `UNIQUE (organization_id, id)`. Statuses: `INVITED`, `ACTIVE`, `SUSPENDED`, `REMOVED`. Rows are retained; removal changes state and revokes access.
 
-An invitation belongs to exactly one organization. Its token must be random, single-use, expiring and stored only as a hash.
+### `invitations`
 
----
+Contains `id UUID PK`, `organization_id UUID NOT NULL`, `invited_by_membership_id UUID NOT NULL`, `email`, `normalized_email`, `token_hash UNIQUE`, `status`, `expires_at`, `accepted_at`, `revoked_at`, and `created_at`.
 
-# 5. Role-Based Access Control (RBAC)
+Composite FK `(organization_id, invited_by_membership_id)` references memberships. Permit at most one pending invitation per organization/normalized email with a partial unique index where `status = 'PENDING'`. Statuses: `PENDING`, `ACCEPTED`, `EXPIRED`, `REVOKED`. Acceptance atomically checks expiry and unused status, consumes the invitation, and activates or creates membership. An already-active member cannot accept another invitation.
 
-Roles and permissions are organization-scoped.
-
-## 5.1 `roles`
+## 5. Authorization
 
-| Column | Type | Constraints |
-|---|---|---|
-| id | UUID | PK |
-| organization_id | UUID | FK → organizations.id |
-| name | VARCHAR(100) | NOT NULL |
-| description | TEXT | NULL |
-| is_system_role | BOOLEAN | NOT NULL |
-| created_at | TIMESTAMPTZ | NOT NULL |
+### `permissions`
 
-Constraint: `UNIQUE(id, organization_id)` and `UNIQUE(organization_id, name)`.
+`id UUID PK`, `code VARCHAR(150) NOT NULL UNIQUE`, `description TEXT NULL`. Permissions are global immutable definitions, contain no `organization_id`, and are seeded only through reviewed migrations.
 
-Examples:
-- Organization Owner
-- Organization Admin
-- Manager
-- Team Lead
-- Employee
-- Auditor
+### `roles`
 
-## 5.2 `permissions`
+Contains `id UUID PK`, `organization_id UUID NOT NULL FK`, `name`, `normalized_name`, `description`, `role_type`, `created_at`, and `updated_at`. Constraints: `UNIQUE (organization_id, id)` and `UNIQUE (organization_id, normalized_name)`. `role_type` distinguishes protected `OWNER` from ordinary/custom roles.
 
-| Column | Type | Constraints |
-|---|---|---|
-| id | UUID | PK |
-| code | VARCHAR(150) | NOT NULL, UNIQUE |
-| description | TEXT | NULL |
-
-Example permission codes:
-
-- `organization.read`
-- `organization.update`
-- `member.invite`
-- `member.remove`
-- `role.manage`
-- `project.create`
-- `project.read`
-- `project.update`
-- `project.delete`
-- `task.create`
-- `task.assign`
-- `task.update`
-- `task.delete`
-- `audit.read`
-
-Permissions are application-defined capabilities. They are not a substitute for resource-level authorization.
-
-## 5.3 `role_permissions`
+### `role_permissions`
 
-| Column | Type | Constraints |
-|---|---|---|
-| role_id | UUID | PK, FK → roles.id |
-| permission_id | UUID | PK, FK → permissions.id |
-| organization_id | UUID | NOT NULL |
-
-Use composite foreign keys to ensure that the role and permission belong to the same organization if permissions are organization-scoped. For the initial design, permissions are global definitions, so `permission_id` references the global permission catalogue and only the role needs tenant ownership.
-
-## 5.4 `membership_roles`
-
-| Column | Type | Constraints |
-|---|---|---|
-| membership_id | UUID | PK component |
-| organization_id | UUID | PK component |
-| role_id | UUID | PK component |
+Columns: `organization_id`, `role_id`, `permission_id`. PK `(role_id, permission_id)`. Composite FK `(organization_id, role_id)` references roles; `permission_id` references the global permissions catalogue. The duplicated organization protects role ownership, not permission scope.
 
-Constraints:
-- Primary key: `(membership_id, role_id)`.
-- Composite FK `(membership_id, organization_id)` → `memberships(id, organization_id)`.
-- Composite FK `(role_id, organization_id)` → `roles(id, organization_id)`.
+### `membership_roles`
 
-This prevents assigning a role from one organization to a membership in another organization.
+Columns: `organization_id`, `membership_id`, `role_id`, `assigned_by_membership_id`, `assigned_at`. PK `(membership_id, role_id)`. Composite FKs reference membership, role and assigning membership through `(organization_id, id)`.
 
----
+Ownership transfer is one transaction that locks relevant assignments, adds the new active owner, then optionally removes the previous owner. Removing, suspending or demoting the last active owner is an application invariant enforced with locking/serializable coordination; a row constraint cannot safely count active owners.
 
-# 6. Teams
-
-## 6.1 `teams`
-
-| Column | Type | Constraints |
-|---|---|---|
-| id | UUID | PK |
-| organization_id | UUID | FK → organizations.id |
-| name | VARCHAR(150) | NOT NULL |
-| description | TEXT | NULL |
-| created_by_user_id | UUID | FK → users.id |
-| created_at | TIMESTAMPTZ | NOT NULL |
-| updated_at | TIMESTAMPTZ | NOT NULL |
-
-Constraint: `UNIQUE(id, organization_id)` and `UNIQUE(organization_id, name)`.
-
-## 6.2 `team_members`
-
-| Column | Type | Constraints |
-|---|---|---|
-| organization_id | UUID | PK component |
-| team_id | UUID | PK component |
-| membership_id | UUID | PK component |
-| joined_at | TIMESTAMPTZ | NOT NULL |
-
-Use composite FKs:
-- `(team_id, organization_id)` → `teams(id, organization_id)`.
-- `(membership_id, organization_id)` → `memberships(id, organization_id)`.
-
-This ensures a team can only include memberships from its own organization.
-
----
-
-# 7. Project Management Tables
-
-## 7.1 `projects`
-
-| Column | Type | Constraints |
-|---|---|---|
-| id | UUID | PK |
-| organization_id | UUID | FK → organizations.id |
-| name | VARCHAR(200) | NOT NULL |
-| description | TEXT | NULL |
-| status | VARCHAR(30) | NOT NULL |
-| priority | VARCHAR(30) | NOT NULL |
-| start_date | DATE | NULL |
-| due_date | DATE | NULL |
-| created_by_user_id | UUID | FK → users.id |
-| created_at | TIMESTAMPTZ | NOT NULL |
-| updated_at | TIMESTAMPTZ | NOT NULL |
-| archived_at | TIMESTAMPTZ | NULL |
-| version | BIGINT | NOT NULL |
-
-Constraints:
-- `UNIQUE(id, organization_id)`.
-- `CHECK(due_date IS NULL OR start_date IS NULL OR due_date >= start_date)`.
-
-Suggested statuses: `PLANNED`, `ACTIVE`, `ON_HOLD`, `COMPLETED`, `CANCELLED`.
-
-Suggested priorities: `LOW`, `MEDIUM`, `HIGH`, `URGENT`.
-
-## 7.2 `project_members`
-
-| Column | Type | Constraints |
-|---|---|---|
-| organization_id | UUID | PK component |
-| project_id | UUID | PK component |
-| membership_id | UUID | PK component |
-| project_role | VARCHAR(30) | NOT NULL |
-| added_at | TIMESTAMPTZ | NOT NULL |
-
-Composite FKs ensure that both the project and membership belong to the same organization.
-
-## 7.3 `project_status_history`
-
-| Column | Type | Constraints |
-|---|---|---|
-| id | UUID | PK |
-| organization_id | UUID | NOT NULL |
-| project_id | UUID | NOT NULL |
-| changed_by_user_id | UUID | FK → users.id |
-| old_status | VARCHAR(30) | NULL |
-| new_status | VARCHAR(30) | NOT NULL |
-| changed_at | TIMESTAMPTZ | NOT NULL |
-
-Use `(project_id, organization_id)` as a composite FK to `projects(id, organization_id)`.
-
----
-
-# 8. Task Management Tables
-
-## 8.1 `tasks`
-
-| Column | Type | Constraints |
-|---|---|---|
-| id | UUID | PK |
-| organization_id | UUID | FK → organizations.id |
-| project_id | UUID | NOT NULL |
-| parent_task_id | UUID | NULL |
-| title | VARCHAR(250) | NOT NULL |
-| description | TEXT | NULL |
-| status | VARCHAR(30) | NOT NULL |
-| priority | VARCHAR(30) | NOT NULL |
-| due_at | TIMESTAMPTZ | NULL |
-| created_by_user_id | UUID | FK → users.id |
-| created_at | TIMESTAMPTZ | NOT NULL |
-| updated_at | TIMESTAMPTZ | NOT NULL |
-| completed_at | TIMESTAMPTZ | NULL |
-| version | BIGINT | NOT NULL |
-
-Constraints:
-- `UNIQUE(id, organization_id)`.
-- Composite FK `(project_id, organization_id)` → `projects(id, organization_id)`.
-- Parent task must belong to the same organization and project.
-- `CHECK(parent_task_id IS NULL OR parent_task_id <> id)`.
-
-Suggested statuses: `TODO`, `IN_PROGRESS`, `IN_REVIEW`, `BLOCKED`, `DONE`, `CANCELLED`.
-
-## 8.2 `task_assignees`
-
-Supports multiple assignees per task.
-
-| Column | Type | Constraints |
-|---|---|---|
-| organization_id | UUID | PK component |
-| task_id | UUID | PK component |
-| membership_id | UUID | PK component |
-| assigned_by_user_id | UUID | FK → users.id |
-| assigned_at | TIMESTAMPTZ | NOT NULL |
-
-Composite FKs:
-- `(task_id, organization_id)` → `tasks(id, organization_id)`.
-- `(membership_id, organization_id)` → `memberships(id, organization_id)`.
-
-## 8.3 `task_comments`
-
-| Column | Type | Constraints |
-|---|---|---|
-| id | UUID | PK |
-| organization_id | UUID | NOT NULL |
-| task_id | UUID | NOT NULL |
-| author_membership_id | UUID | NOT NULL |
-| body | TEXT | NOT NULL |
-| created_at | TIMESTAMPTZ | NOT NULL |
-| updated_at | TIMESTAMPTZ | NOT NULL |
-| deleted_at | TIMESTAMPTZ | NULL |
-
-Composite FKs ensure the task and comment author membership belong to the same organization.
-
-## 8.4 `task_labels`
-
-| Column | Type | Constraints |
-|---|---|---|
-| id | UUID | PK |
-| organization_id | UUID | NOT NULL |
-| name | VARCHAR(80) | NOT NULL |
-| color | VARCHAR(20) | NULL |
-
-Constraint: `UNIQUE(id, organization_id)` and `UNIQUE(organization_id, name)`.
-
-## 8.5 `task_label_links`
-
-| Column | Type | Constraints |
-|---|---|---|
-| organization_id | UUID | PK component |
-| task_id | UUID | PK component |
-| label_id | UUID | PK component |
-
-Composite FKs ensure the task and label belong to the same organization.
-
-## 8.6 `task_status_history`
-
-| Column | Type | Constraints |
-|---|---|---|
-| id | UUID | PK |
-| organization_id | UUID | NOT NULL |
-| task_id | UUID | NOT NULL |
-| changed_by_user_id | UUID | FK → users.id |
-| old_status | VARCHAR(30) | NULL |
-| new_status | VARCHAR(30) | NOT NULL |
-| changed_at | TIMESTAMPTZ | NOT NULL |
-
----
-
-# 9. Notifications
-
-## 9.1 `notifications`
-
-| Column | Type | Constraints |
-|---|---|---|
-| id | UUID | PK |
-| organization_id | UUID | NULL |
-| recipient_user_id | UUID | FK → users.id |
-| type | VARCHAR(100) | NOT NULL |
-| title | VARCHAR(250) | NOT NULL |
-| message | TEXT | NOT NULL |
-| resource_type | VARCHAR(100) | NULL |
-| resource_id | UUID | NULL |
-| read_at | TIMESTAMPTZ | NULL |
-| created_at | TIMESTAMPTZ | NOT NULL |
-
-A notification may be user-level or organization-related. For organization-related notifications, validate that the recipient has an active membership in that organization before creating and displaying it.
+## 6. Projects
 
-## 9.2 `notification_preferences`
-
-| Column | Type | Constraints |
-|---|---|---|
-| id | UUID | PK |
-| user_id | UUID | FK → users.id |
-| organization_id | UUID | NULL |
-| notification_type | VARCHAR(100) | NOT NULL |
-| in_app_enabled | BOOLEAN | NOT NULL |
-| email_enabled | BOOLEAN | NOT NULL |
-| updated_at | TIMESTAMPTZ | NOT NULL |
+### `projects`
 
-Use an appropriate uniqueness rule for user-global versus organization-specific preferences. Avoid treating a nullable organization ID as an ordinary component of a unique key without accounting for PostgreSQL NULL semantics.
-
----
+Contains `id UUID PK`, `organization_id UUID NOT NULL FK`, `name`, `description`, `status`, `priority`, `start_date`, `due_date`, `created_by_membership_id`, timestamps, `archived_at`, and `version`. Require `UNIQUE (organization_id, id)`, a composite creator FK to memberships, and `CHECK (due_date IS NULL OR start_date IS NULL OR due_date >= start_date)`.
 
-# 10. Audit Logging
-
-## 10.1 `audit_logs`
-
-| Column | Type | Constraints |
-|---|---|---|
-| id | UUID | PK |
-| organization_id | UUID | NULL |
-| actor_user_id | UUID | NULL |
-| action | VARCHAR(150) | NOT NULL |
-| resource_type | VARCHAR(100) | NOT NULL |
-| resource_id | UUID | NULL |
-| outcome | VARCHAR(30) | NOT NULL |
-| ip_address | INET | NULL |
-| user_agent | TEXT | NULL |
-| metadata | JSONB | NULL |
-| created_at | TIMESTAMPTZ | NOT NULL |
+### `project_members`
 
-Audit records should be append-only for application users. Restrict access to audit data and avoid recording passwords, tokens, session secrets or unnecessary sensitive personal information.
+Columns: `organization_id`, `project_id`, `membership_id`, `project_role`, `added_by_membership_id`, `added_at`. PK `(project_id, membership_id)`. Composite FKs reference project, participant membership and adding membership within the same organization.
 
-Platform-wide events may have a NULL organization ID. Organization events must be tenant-scoped and access-controlled.
+## 7. Tasks
 
----
+### `tasks`
 
-# 11. Important Relationship Summary
+Contains `id UUID PK`, `organization_id`, `project_id`, nullable `parent_task_id`, `title`, `description`, `status`, `priority`, `due_at`, `created_by_membership_id`, timestamps, `completed_at`, and `version`.
 
-| Parent | Child | Relationship |
-|---|---|---|
-| users | memberships | One-to-many |
-| organizations | memberships | One-to-many |
-| organizations | invitations | One-to-many |
-| organizations | roles | One-to-many |
-| roles | role_permissions | One-to-many |
-| permissions | role_permissions | One-to-many |
-| memberships | membership_roles | One-to-many |
-| organizations | teams | One-to-many |
-| teams | team_members | One-to-many |
-| organizations | projects | One-to-many |
-| projects | project_members | One-to-many |
-| projects | tasks | One-to-many |
-| tasks | task_assignees | One-to-many |
-| tasks | task_comments | One-to-many |
-| tasks | task_labels | Many-to-many through task_label_links |
-| users | user_sessions | One-to-many |
-| users | notifications | One-to-many |
-| organizations | audit_logs | One-to-many |
+Required constraints:
 
----
+- `UNIQUE (organization_id, id)` for tenant references.
+- `UNIQUE (organization_id, project_id, id)` for parent references.
+- FK `(organization_id, project_id)` → projects.
+- FK `(organization_id, created_by_membership_id)` → memberships.
+- FK `(organization_id, project_id, parent_task_id)` → tasks `(organization_id, project_id, id)`.
+- `CHECK (parent_task_id IS NULL OR parent_task_id <> id)`.
 
-# 12. Tenant Isolation – Critical Database Design
+The parent FK guarantees the same organization and project. Preventing longer cycles is an application invariant checked transactionally because ordinary checks/FKs cannot traverse an arbitrary hierarchy.
 
-This is one of the most important parts of WorkSphere.
+### `task_assignees`
 
-Suppose:
+Columns: `organization_id`, `task_id`, `membership_id`, `assigned_by_membership_id`, `assigned_at`. PK `(task_id, membership_id)`. Composite FKs reference task, assignee and assigning membership in the organization. Application policy additionally requires active membership and, if configured, project membership.
 
-- Organization A owns Project A.
-- Organization B owns Project B.
-- User A belongs only to Organization A.
-- User B belongs only to Organization B.
+## 8. Audit and outbox
 
-User A must never be able to access Project B, even if they know its UUID.
+### `audit_logs`
 
-### Required enforcement layers
+Contains `id UUID PK`, nullable `organization_id`, nullable `actor_membership_id`, nullable `platform_actor_user_id FK`, `action`, `resource_type`, nullable `resource_id`, `outcome`, nullable `ip_address`, `user_agent`, `metadata JSONB`, and `created_at`.
 
-**Layer 1 – Authentication**
+Tenant events use composite actor membership. Platform events may use a platform actor; customer support access is never implied. Add a check preventing ambiguous simultaneous actor types. The application role may insert and perform authorized reads but may not update/delete. Secrets and unnecessary personal data are prohibited. Provisional retention is at least 365 days for security/authorization events, pending legal and customer policy.
 
-Identify the authenticated user from the server-managed session.
+### `outbox_events`
 
-**Layer 2 – Active organization membership**
+Contains `id UUID PK` (the idempotency key), nullable `organization_id`, `aggregate_type`, `aggregate_id`, `event_type`, `event_version`, `payload JSONB`, `occurred_at`, `available_at`, `attempt_count`, `status`, `claimed_at`, `processed_at`, and `last_error_code`.
 
-Verify that the user has an active membership in the requested organization.
+Persist it atomically with the business change. Workers claim safely (for example `FOR UPDATE SKIP LOCKED`), use exponential backoff with jitter, at-least-once delivery and stable idempotency keys. Exhausted/permanent failures enter `FAILED`, alert operators and support controlled replay. Raw invitation, verification and reset secrets are not stored in general payloads. See [ADR-008](../adr/ADR-008-transactional-outbox-strategy.md).
 
-**Layer 3 – Authorization**
+## 9. Delete, retention and erasure rules
 
-Check the required permission and resource-level access policy.
-
-**Layer 4 – Tenant-aware database query**
-
-Every tenant-owned query must be constrained by the authorized organization ID.
-
-Example:
-
-```sql
-SELECT id, name, status
-FROM projects
-WHERE id = :projectId
-  AND organization_id = :authorizedOrganizationId;
-```
-
-Never query a tenant-owned record by its UUID alone.
-
-### Composite foreign key example
-
-```sql
-ALTER TABLE projects
-ADD CONSTRAINT uq_projects_id_org
-UNIQUE (id, organization_id);
-
-ALTER TABLE tasks
-ADD CONSTRAINT fk_tasks_project_same_org
-FOREIGN KEY (project_id, organization_id)
-REFERENCES projects (id, organization_id);
-```
-
-This prevents a task belonging to Organization A from referencing a project belonging to Organization B.
-
-The application must still perform authentication and authorization checks. Database constraints do not replace them.
-
----
-
-# 13. Indexing Strategy
-
-Create indexes based on common access patterns and validate them using PostgreSQL query plans.
-
-Initial candidates:
-
-```sql
-CREATE INDEX idx_memberships_user_status
-ON memberships (user_id, status);
-
-CREATE INDEX idx_memberships_org_status
-ON memberships (organization_id, status);
-
-CREATE INDEX idx_projects_org_status_created
-ON projects (organization_id, status, created_at DESC);
-
-CREATE INDEX idx_project_members_membership
-ON project_members (organization_id, membership_id);
-
-CREATE INDEX idx_tasks_org_project_status_due
-ON tasks (organization_id, project_id, status, due_at);
-
-CREATE INDEX idx_task_assignees_membership
-ON task_assignees (organization_id, membership_id);
-
-CREATE INDEX idx_task_comments_task_created
-ON task_comments (organization_id, task_id, created_at);
-
-CREATE INDEX idx_notifications_recipient_created
-ON notifications (recipient_user_id, created_at DESC);
-
-CREATE INDEX idx_notifications_unread
-ON notifications (recipient_user_id, created_at DESC)
-WHERE read_at IS NULL;
-
-CREATE INDEX idx_audit_logs_org_created
-ON audit_logs (organization_id, created_at DESC);
-```
-
-Also index foreign-key columns where useful. PostgreSQL does not automatically create indexes on the referencing side of every foreign key.
-
-Avoid adding indexes without considering write overhead, storage and actual query patterns.
-
----
-
-# 14. Database Naming Conventions
-
-| Item | Convention | Example |
-|---|---|---|
-| Tables | snake_case, plural | organizations |
-| Columns | snake_case | created_at |
-| Primary key | id | id |
-| Foreign key | referenced_entity_id | organization_id |
-| Unique constraint | uq_table_columns | uq_memberships_org_user |
-| Foreign key constraint | fk_table_reference | fk_tasks_project |
-| Check constraint | chk_table_rule | chk_projects_due_date |
-| Index | idx_table_columns | idx_tasks_org_status |
-
-Use explicit constraint names in Flyway migrations.
-
----
-
-# 15. Flyway Migration Plan
-
-Do not create the entire schema in one enormous migration.
-
-Suggested migration sequence:
-
-| Migration | Purpose |
+| Relationship | Initial behavior |
 |---|---|
-| V1 | Users and identity foundations |
-| V2 | User sessions and authentication tokens |
-| V3 | Organizations |
-| V4 | Memberships and invitations |
-| V5 | Permissions and roles |
-| V6 | Role permissions and membership roles |
-| V7 | Teams and team memberships |
-| V8 | Projects and project memberships |
-| V9 | Tasks and assignees |
-| V10 | Comments, labels and task history |
-| V11 | Notifications and preferences |
-| V12 | Audit logs |
-| V13 | Additional indexes and integrity constraints |
+| User → memberships/audit | `RESTRICT`; use anonymization/erasure workflow |
+| Organization → tenant data | `RESTRICT`; close then purge only through approved retention workflow |
+| Membership → roles/project/task/audit | `RESTRICT`; retain row and change status |
+| Role → assignments | `RESTRICT` while assigned |
+| Project → tasks/members | `RESTRICT`; archive in normal flow |
+| Task → assignees | `CASCADE` only during a controlled hard purge |
+| Session/token → user | `CASCADE` permitted during approved hard erasure |
+| Outbox/audit | Never cascade from mutable business entities |
 
-The exact migration split may change as implementation evolves. Never edit a migration that has already been applied in a shared or production environment; create a new migration instead.
+User erasure revokes sessions/tokens, removes or anonymizes direct profile identifiers, retains only required pseudonymous membership/audit evidence, and ages data from logs/backups under documented retention. Exact legal bases and periods require privacy approval.
 
----
+## 10. Enforcement boundary
 
-# 16. Tables Deferred Until Later Releases
+Database-enforced:
 
-Do not build every possible feature into the MVP.
+- PK/FK, composite tenant consistency and uniqueness.
+- One membership per organization/user and one pending invitation per organization/email.
+- Same-project/same-organization task parent.
+- Simple checks, optimistic-lock columns and restricted audit privileges.
 
-Potential later tables:
+Application-enforced transactionally where needed:
 
-| Feature | Possible tables |
-|---|---|
-| File attachments | files, task_attachments |
-| Task dependencies | task_dependencies |
-| Mentions | mentions |
-| Conversations | conversations, conversation_members, messages |
-| WebSocket presence | user_presence |
-| External integrations | integrations, integration_credentials |
-| Webhooks | webhooks, webhook_deliveries |
-| Transactional outbox | outbox_events |
-| Advanced reporting | saved_reports, report_runs |
-| MFA | user_mfa_methods, recovery_codes |
-| SSO | identity_providers, external_identities |
+- Authentication, active membership, permissions and resource access.
+- Last-active-owner protection and ownership transfer.
+- Invitation eligibility and acceptance; token expiry and single-use consumption.
+- Task hierarchy cycle prevention and allowed status transitions.
+- Active/project membership rules for assignees.
+- Retention, erasure and delivery behavior.
 
-For event-driven processing, introduce an outbox table when asynchronous event publishing is implemented. Do not publish critical events directly inside a database transaction and assume both operations will always succeed together.
+## 11. Initial index candidates
 
----
+```sql
+CREATE INDEX idx_memberships_user_status ON memberships (user_id, status);
+CREATE INDEX idx_memberships_org_status ON memberships (organization_id, status);
+CREATE INDEX idx_projects_org_status_created ON projects (organization_id, status, created_at DESC);
+CREATE INDEX idx_project_members_membership ON project_members (organization_id, membership_id);
+CREATE INDEX idx_tasks_org_project_status_due ON tasks (organization_id, project_id, status, due_at);
+CREATE INDEX idx_task_assignees_membership ON task_assignees (organization_id, membership_id);
+CREATE INDEX idx_sessions_user_active ON user_sessions (user_id, absolute_expires_at) WHERE revoked_at IS NULL;
+CREATE INDEX idx_audit_org_created ON audit_logs (organization_id, created_at DESC);
+CREATE INDEX idx_outbox_pending ON outbox_events (available_at, occurred_at) WHERE status = 'PENDING';
+```
 
-# 17. Required Database Security Tests
+Validate candidates with PostgreSQL query plans. PostgreSQL does not automatically index every referencing FK.
 
-Before production, implement integration tests proving:
+## 12. Migration and test gates
 
-1. Organization A cannot read Organization B's projects.
-2. Organization A cannot update Organization B's tasks.
-3. A task cannot reference a project from another organization.
-4. A team cannot include a membership from another organization.
-5. A project cannot include a membership from another organization.
-6. A membership cannot receive another organization's role.
-7. A removed or suspended member cannot access tenant resources.
-8. A revoked session cannot authenticate.
-9. An expired invitation cannot be accepted.
-10. A user cannot reuse a password-reset token.
+No migrations are created by this documentation task. After human approval, implement small reviewed migrations in dependency order. Never edit an applied shared migration.
 
-Use PostgreSQL Testcontainers for integration tests so the tests exercise PostgreSQL constraints rather than relying only on an in-memory database.
+PostgreSQL Testcontainers must prove cross-tenant reads/writes are denied; invalid cross-tenant role/project/task/actor relationships fail; task parents cannot cross project/tenant; inactive memberships lose access; last-owner protection survives concurrency; tokens/invitations are single-use; revoked/expired sessions fail across instances; outbox writes are atomic and retries idempotent; and application credentials cannot mutate audit data.
 
----
+## 13. Human approvals still required
 
-# 18. Design Decisions Still Requiring Approval
-
-Before treating this as the final physical schema, confirm:
-
-- Whether users can belong to multiple organizations — proposed: **yes**.
-- Whether tasks can have multiple assignees — proposed: **yes**.
-- Whether organization slugs are globally unique — proposed: **yes**.
-- Whether permissions are global definitions and roles are organization-scoped — proposed: **yes**.
-- Whether soft deletion is required for all business entities — proposed: **no blanket soft deletion; use explicit lifecycle/status fields where needed**.
-- Whether PostgreSQL Row-Level Security is enabled in the first release — proposed: **not initially; consider it as defense-in-depth after transaction-scoped tenant context is designed and tested**.
-
-These are design choices, not assumptions to hide in implementation.
-
----
-
-# 19. Recommended Implementation Order
-
-1. Finalize the ERD and design decisions.
-2. Review tenant-aware foreign keys and uniqueness constraints.
-3. Design the detailed authentication/session model.
-4. Create Flyway migrations for identity and organizations.
-5. Implement identity and organization repositories.
-6. Implement tenant isolation integration tests.
-7. Continue with RBAC, projects and tasks.
-
-**Important:** The ERD is the logical and physical-design baseline, not permission to generate all migrations at once. Implement and test one database module at a time.
-
-**Definition of done:** every table has a documented owner, primary key, foreign keys, unique constraints, check constraints where needed, tenant-isolation rules, indexes based on query patterns, and integration tests for critical relationships.
+- ADR acceptance and final permission catalogue.
+- Session timeouts, concurrent-session limit, rate limits and CSRF mechanism.
+- Invitation lifetime and reactivation behavior.
+- Reserved slugs and exact normalization implementation.
+- Owner-transfer authorization and emergency recovery.
+- Audit/outbox/application retention and privacy/legal erasure policy.
+- Deployment backup, PITR, RPO/RTO and database privileges.

@@ -1,0 +1,31 @@
+# IDE and editor-local state
+.idea/
+*.iml
+.vscode/
+
+# Operating-system files
+.DS_Store
+Thumbs.db
+
+# Java / Maven
+target/
+*.log
+
+# Node / Vite
+node_modules/
+dist/
+.vite/
+coverage/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+application-local.yml
+application-local.yaml
+
+# Test and tool output
+playwright-report/
+test-results/
+.testcontainers.properties
+
