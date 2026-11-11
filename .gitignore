@@ -21,8 +21,6 @@ coverage/
 .env
 .env.*
 !.env.example
-application-local.yml
-application-local.yaml
 
 # Test and tool output
 playwright-report/

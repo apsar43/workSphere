@@ -1,0 +1,8 @@
+spring:
+  config:
+    activate:
+      on-profile: local
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/worksphere}
+    username: ${DB_USERNAME:worksphere}
+    password: ${DB_PASSWORD:worksphere_local_only}

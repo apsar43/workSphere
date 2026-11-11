@@ -12,7 +12,159 @@
 **Target Scale:** Enterprise applications supporting 100,000+ registered users    
 **Architecture Philosophy:** Security First, Scalability, Performance, Maintainability, Reliability
 
-**Documentation status:** Proposed architecture baseline; no application is implemented. Start with the [documentation index](docs/README.md) and [ADR index](docs/adr/README.md). Human review is required before ADRs become Accepted or database migrations are generated.
+**Documentation status:** Proposed architecture baseline with a runnable development scaffold; no business capability is implemented. Start with the [documentation index](docs/README.md) and [ADR index](docs/adr/README.md). Human review is required before ADRs become Accepted or business database migrations are generated.
+
+---
+
+# Development Foundation
+
+The repository now contains a runnable development foundation. It does not implement registration, authentication, organizations, RBAC, projects, tasks, or other business capabilities.
+
+## Selected versions
+
+| Tool or library | Pinned version |
+|---|---|
+| Java | 21 |
+| Maven Wrapper | 3.9.11 |
+| Spring Boot | 4.1.2 |
+| ArchUnit | 1.4.1 |
+| PostgreSQL container | 17.7-alpine |
+| Node.js | 22.13.0 recommended; 22.12 or newer required |
+| npm | 10 or newer |
+| React / React DOM | 19.3.1 |
+| React Router | 7.18.5 |
+| TanStack Query | 5.107.1 |
+| Vite | 6.4.6 |
+| TypeScript | 5.8.3 |
+| Vitest / coverage | 5.1.0 |
+| ESLint | 9.39.5 |
+| Prettier | 3.9.10 |
+
+Spring Boot manages compatible versions of Spring Framework, Spring Security, Flyway, PostgreSQL, JUnit, Mockito, AssertJ, and Testcontainers. `frontend/package-lock.json` pins the complete npm dependency graph.
+
+## Repository structure
+
+```text
+workSphere/
+├── backend/                 Spring Boot modular monolith
+├── frontend/                React and TypeScript application shell
+├── infrastructure/docker/   Local PostgreSQL Compose project
+├── docs/                    Architecture, ERD, and proposed ADRs
+└── .github/workflows/       GitHub Actions CI
+```
+
+Backend business-module roots are under `backend/src/main/java/com/worksphere`: `identity`, `organization`, `authorization`, `project`, `task`, and `audit`. The `shared` package contains only cross-cutting foundation code. Modules add domain/application/infrastructure/presentation packages when real implementation requires them; empty abstractions are intentionally avoided.
+
+## Windows prerequisites
+
+Install and confirm:
+
+```powershell
+java -version       # Java 21
+node --version      # v22.12.0 or newer
+npm --version       # 10 or newer
+docker --version
+docker compose version
+```
+
+The checked-in Maven Wrapper downloads Maven 3.9.11, so a global Maven installation is optional.
+
+## Local PostgreSQL
+
+The Compose project uses safe local-only defaults. To customize them, copy the example without committing the resulting `.env` file:
+
+```powershell
+Set-Location infrastructure/docker
+Copy-Item .env.example .env
+docker compose up -d --wait
+docker compose ps
+docker compose logs postgres
+```
+
+Stop containers without deleting the named database volume:
+
+```powershell
+docker compose down
+```
+
+Deleting the volume destroys local database data and should only be done deliberately:
+
+```powershell
+docker compose down --volumes
+```
+
+The local backend defaults match `.env.example`. Override them with `DB_URL`, `DB_USERNAME`, and `DB_PASSWORD`. The `production` Spring profile has no credential defaults and fails when required environment variables are absent.
+
+Flyway is enabled and owns schema evolution. The migration directory exists but intentionally contains no business migrations. Hibernate uses `ddl-auto: validate`, never `update` or `create`.
+
+## Frontend
+
+```powershell
+Set-Location frontend
+npm ci
+npm run dev
+```
+
+Vite prints the local URL, normally `http://localhost:5173`. Copy `.env.example` to `.env.local` only when overriding `VITE_API_BASE_URL`; Vite variables are public browser configuration and must never contain secrets.
+
+Quality and build commands:
+
+```powershell
+npm run format
+npm run format:check
+npm run lint
+npm run lint:fix
+npm run typecheck
+npm run test
+npm run test:watch
+npm run test:coverage
+npm run build
+npm run preview
+```
+
+## Backend
+
+Start PostgreSQL first, then run:
+
+```powershell
+Set-Location backend
+.\mvnw.cmd spring-boot:run
+```
+
+The public health endpoint is `http://localhost:8080/actuator/health`. Actuator details are not exposed. Until the identity milestone is approved, health/info are public and every other backend request is denied; no temporary user, JWT, or authentication implementation exists.
+
+Backend quality and test commands:
+
+```powershell
+.\mvnw.cmd spotless:apply
+.\mvnw.cmd spotless:check
+.\mvnw.cmd compile
+.\mvnw.cmd test
+.\mvnw.cmd verify
+```
+
+`test` runs context, health, validation, Mockito, and ArchUnit tests. `verify` additionally runs the `*IT` PostgreSQL Testcontainers test. Docker must be running for integration tests; H2 is not used.
+
+## Configuration and secrets
+
+- `local` is the default development profile and contains local-only database defaults.
+- Activate production with `SPRING_PROFILES_ACTIVE=production` and provide all three database environment variables.
+- Never commit `.env`, credentials, cookies, raw tokens, private keys, or production data.
+- Actuator exposes only health and info and never displays environment values or health details.
+- API controllers added later use the `/api/v1` request-mapping convention; Actuator remains at `/actuator`.
+
+## Continuous integration
+
+[The CI workflow](.github/workflows/ci.yml) runs for pull requests and pushes to `main`, `develop`, `codex/**`, `feature/**`, and `fix/**`. It uses `npm ci`, the lockfile, Node 22.13.0, Java 21, the Maven Wrapper, formatting checks, frontend lint/typecheck/tests/build, backend compilation/unit/architecture tests, and Docker-backed PostgreSQL integration tests.
+
+## Troubleshooting
+
+- **`npm` reports an engine mismatch:** install Node 22.12 or newer. Node 22.13.0 is the CI version.
+- **npm registry reports plaintext HTTP/TLS errors:** run commands with `--registry=https://registry.npmjs.org/` or correct the user-level npm registry configuration.
+- **Port 5432 is occupied:** set `POSTGRES_PORT` in `infrastructure/docker/.env` and update `DB_URL` accordingly.
+- **Testcontainers cannot find Docker:** start Docker Desktop and confirm `docker info` succeeds before `mvnw verify`.
+- **Backend fails database validation:** confirm Compose reports PostgreSQL healthy and the datasource variables match.
+- **PowerShell blocks a script:** use `mvnw.cmd` on Windows; npm commands invoke the installed `npm.cmd` normally.
 
 ---
 
