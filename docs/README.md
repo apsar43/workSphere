@@ -8,6 +8,13 @@ This index defines the reading order and authority of WorkSphere documentation.
 4. [Architecture decisions](adr/README.md)
 5. [Contribution and branching guidance](../CONTRIBUTING.md)
 
+## Development guides
+
+- [Frontend setup and commands](development/frontend.md)
+- [Backend setup and commands](development/backend.md)
+- [Local infrastructure and CI](development/infrastructure-and-ci.md)
+- [Build, CI/CD, and free deployment](development/build-and-free-deployment.md)
+
 ## Document authority
 
 - ADRs record individual decisions and their approval status.
