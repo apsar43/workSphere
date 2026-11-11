@@ -12,13 +12,13 @@
 **Target Scale:** Enterprise applications supporting 100,000+ registered users    
 **Architecture Philosophy:** Security First, Scalability, Performance, Maintainability, Reliability
 
-**Documentation status:** Proposed architecture baseline with a runnable development scaffold; no business capability is implemented. Start with the [documentation index](docs/README.md) and [ADR index](docs/adr/README.md). Human review is required before ADRs become Accepted or business database migrations are generated.
+**Documentation status:** Architecture baseline with a runnable development scaffold and the first identity/authentication vertical slice. Start with the [documentation index](docs/README.md) and [ADR index](docs/adr/README.md). Human review remains required before expanding migrations into business domains.
 
 ---
 
 # Development Foundation
 
-The repository now contains a runnable development foundation. It does not implement registration, authentication, organizations, RBAC, projects, tasks, or other business capabilities.
+The repository now contains a runnable development foundation plus local registration, login, logout, CSRF protection, opaque database-backed sessions, and the current-user API. Google OIDC, email verification delivery, recovery, organizations, RBAC, projects, and tasks remain to be implemented.
 
 ## Selected versions
 
@@ -95,7 +95,7 @@ docker compose down --volumes
 
 The local backend defaults match `.env.example`. Override them with `DB_URL`, `DB_USERNAME`, and `DB_PASSWORD`. The `production` Spring profile has no credential defaults and fails when required environment variables are absent.
 
-Flyway is enabled and owns schema evolution. The migration directory exists but intentionally contains no business migrations. Hibernate uses `ddl-auto: validate`, never `update` or `create`.
+Flyway is enabled and owns schema evolution. V1 contains the identity authentication foundation and V2 adds shared login throttling. Hibernate uses `ddl-auto: validate`, never `update` or `create`.
 
 ## Frontend
 
@@ -131,7 +131,7 @@ Set-Location backend
 .\mvnw.cmd spring-boot:run
 ```
 
-The public health endpoint is `http://localhost:8080/actuator/health`. Actuator details are not exposed. Until the identity milestone is approved, health/info are public and every other backend request is denied; no temporary user, JWT, or authentication implementation exists.
+The public health endpoint is `http://localhost:8080/actuator/health`. Actuator details are not exposed. Health/info and the documented authentication entry points are public; `/users/me` and future application APIs require the opaque server-managed session. No browser JWT is used.
 
 Backend quality and test commands:
 
@@ -2477,6 +2477,7 @@ Initial decisions:
 | [ADR-008](docs/adr/ADR-008-transactional-outbox-strategy.md) | Transactional outbox strategy | Proposed |
 | [ADR-009](docs/adr/ADR-009-mvp-scope.md) | MVP scope | Proposed |
 | [ADR-010](docs/adr/ADR-010-pragmatic-clean-architecture.md) | Pragmatic Clean Architecture | Proposed |
+| [ADR-011](docs/adr/ADR-011-browser-authentication-and-google-oidc.md) | Browser authentication and Google OpenID Connect | Accepted for incremental implementation |
 
 No major architectural change should happen silently.
 

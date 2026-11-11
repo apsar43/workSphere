@@ -1,6 +1,6 @@
 # Build, CI/CD, and Free Deployment Guide
 
-This guide defines the proposed zero-cost deployment flow for WorkSphere. It covers local release builds, pushing to GitHub, GitHub Actions CI, and the recommended free hosting topology.
+This guide defines the current zero-cost deployment flow for WorkSphere. It covers local release builds, GitHub Actions CI, Neon PostgreSQL, the Render backend, and the Cloudflare Worker frontend.
 
 > This is a hobby/demo deployment baseline, not a production SLA. Free services can sleep, throttle, change limits, or be discontinued. Do not store sensitive or customer production data until security, backup, recovery, monitoring, and paid-service requirements are approved.
 
@@ -21,7 +21,7 @@ GitHub repository
         v
       main
         |
-        +--> Cloudflare Pages --> React/Vite frontend
+        +--> Cloudflare Worker Static Assets --> React/Vite frontend
         |
         +--> Render Web Service --> Spring Boot API
                                       |
@@ -35,7 +35,7 @@ Recommended providers:
 |---|---|---|
 | Source control | GitHub | Repository, pull requests, branch protection, Actions |
 | CI | GitHub Actions | Existing workflow already validates both applications |
-| Frontend | Cloudflare Pages | Free static hosting, TLS, GitHub integration, preview deployments |
+| Frontend | Cloudflare Workers Static Assets | Free static hosting, TLS, GitHub integration, and SPA routing |
 | Backend | Render Free Web Service | Supports Docker-based Java services and managed HTTPS |
 | Database | Neon Free Postgres | Persistent serverless PostgreSQL without Render's 30-day free database expiry |
 
@@ -65,7 +65,8 @@ Deployment foundation already included:
 - host-provided `PORT` support with local port 8080 as the fallback
 - environment-specific exact-origin CORS configuration
 - frontend `VITE_API_BASE_URL` support
-- Cloudflare Pages SPA route fallback
+- Cloudflare Workers Static Assets configuration with SPA route fallback
+- pinned Wrangler CLI used by Cloudflare's deploy command
 - production container build verification in GitHub Actions
 
 Do not deploy the current scaffold as if it were a completed product. At this stage, the deployment proves the delivery pipeline and health connectivity only.
@@ -200,11 +201,13 @@ Provider dashboards should own deployment secrets for the first deployment. If G
 Use two separate responsibilities:
 
 - GitHub Actions validates every pull request and push.
-- Cloudflare and Render deploy the `main` branch through their GitHub integrations.
+- Render and the single active Cloudflare Worker deploy the `main` branch through their GitHub integrations.
 
 This is the simplest free setup because GitHub does not need Cloudflare or Render API tokens. A merge to `main` triggers provider builds automatically.
 
 The limitation is that a provider can start deployment while the `main` CI run is still executing. Branch protection ensures the pull request passed CI before merge, which keeps this acceptable for the initial demo. A later production-grade pipeline should promote an immutable artifact only after CI succeeds.
+
+Cloudflare preview builds are intentionally disabled for now. Pull requests run GitHub CI only; merging to `main` triggers the production Worker deployment. This avoids dynamic preview origins that are not in the backend's credentialed CORS allowlist.
 
 ## 7. Create the Neon PostgreSQL database
 
@@ -226,6 +229,8 @@ Do not paste these values into source files, GitHub issues, documentation, scree
 
 Before using a pooled Neon endpoint with Hibernate/HikariCP, test Flyway migration locking, transaction behavior, and connection lifetime. Start with the connection type recommended by Neon for a long-running JVM service, then load-test before launch.
 
+Neon initially provides combined `DATABASE_URL` and `DATABASE_URL_POOLED` values. Do not paste either combined value into Git or Render for this application. Convert the direct hostname into the JDBC `DB_URL` shown above and keep the username/password separate. If a password is pasted into chat, an issue, a log, or source control, reset it in Neon immediately and update Render; an exposed password must never be reused.
+
 ## 8. Deploy the Spring Boot backend to Render
 
 The backend deployment uses `backend/Dockerfile`, which builds the Maven application in one image stage and runs it as a non-root user in a smaller Java 21 runtime stage.
@@ -241,13 +246,15 @@ After the Dockerfile and production configuration are committed:
 7. Set health check path to `/actuator/health`.
 8. Add these secret environment variables:
 
-```text
+```dotenv
 SPRING_PROFILES_ACTIVE=production
 DB_URL=jdbc:postgresql://<neon-host>:5432/<database>?sslmode=require
 DB_USERNAME=<application-role>
 DB_PASSWORD=<generated-password>
-FRONTEND_ORIGIN=https://<cloudflare-project>.pages.dev
+FRONTEND_ORIGIN=https://temporary.invalid
 ```
+
+Use Render's **Add from .env** field or add each value separately. Do not add quotes, `DATABASE_URL`, `DATABASE_URL_POOLED`, or `PORT`. The Spring application expects the four names above, Render provides `PORT`, and the real password must exist only in the Neon/Render secret stores. Replace the temporary origin with the exact Worker URL after the frontend deploys.
 
 Spring must bind to Render's provided port. The eventual production configuration should use:
 
@@ -261,38 +268,87 @@ Do not define `PORT` yourself unless there is a specific need; Render provides i
 After deployment, verify:
 
 ```powershell
-Invoke-RestMethod https://<render-service>.onrender.com/actuator/health
+Invoke-RestMethod https://worksphere-api-g3t1.onrender.com/actuator/health
 ```
 
 The response must report `UP`. Inspect Render logs for successful Flyway validation/migration and database connectivity without printing credentials.
 
-## 9. Deploy the Vite frontend to Cloudflare Pages
+The current public backend health endpoint is:
+
+```text
+https://worksphere-api-g3t1.onrender.com/actuator/health
+```
+
+The service root intentionally returns HTTP `403`. The foundation security policy exposes only `/actuator/health` and `/actuator/info` until public business APIs and authentication are implemented.
+
+## 9. Deploy the Vite frontend to Cloudflare Workers
 
 After the backend URL exists:
 
-1. In Cloudflare, open **Workers & Pages** and create a Pages project.
+1. In Cloudflare, open **Workers & Pages** and create a Worker from GitHub.
 2. Connect the GitHub repository.
-3. Select `main` as the production branch.
-4. Configure:
+3. Name the Worker `worksphere-webapp`; this must match `frontend/wrangler.jsonc`.
+4. Select `main` as the production branch.
+5. After creation, open **Settings > Build** and configure:
 
 ```text
-Root directory: frontend
+Root directory: /frontend
 Build command: npm run build
-Build output directory: dist
-Node version: 22.13.0
+Deploy command: npx wrangler deploy
 ```
 
-5. Add the production build variable:
+6. Add these build variables:
 
 ```text
-VITE_API_BASE_URL=https://<render-service>.onrender.com/api/v1
+NODE_VERSION=22.13.0
+VITE_API_BASE_URL=/api/v1
 ```
 
 `VITE_*` variables are embedded into browser JavaScript at build time. They are public configuration and must never contain secrets.
 
-Deploy and open the generated `pages.dev` URL. Add that exact HTTPS origin to the backend CORS allowlist. When adding a custom domain later, update the backend allowlist and rebuild/redeploy as required.
+The repository's `frontend/wrangler.jsonc` publishes `dist`, identifies the Worker as `worksphere-webapp`, sets `not_found_handling` to `single-page-application`, and runs the Worker first for `/api/*`. `frontend/worker/index.ts` proxies that path to Render while keeping browser cookies on the Cloudflare application origin. Do not add a Pages `_redirects` file; Workers rejects the old catch-all rule as an infinite loop when SPA handling is already enabled.
 
-For React Router client-side routes, add the Cloudflare Pages SPA fallback configuration before the application introduces deep links; otherwise refreshing a nested route may return 404.
+`API_ORIGIN` is a non-secret Worker variable containing the fixed Render origin. Keep secrets such as database credentials and future Google client secrets only in Render; never expose them as `VITE_*` variables. If the Render service URL changes, update `API_ORIGIN` in `wrangler.jsonc`, review it, and redeploy.
+
+Deploy and open the generated `workers.dev` URL. Copy the exact origin and update Render:
+
+```dotenv
+FRONTEND_ORIGIN=https://worksphere-webapp.<account-subdomain>.workers.dev
+```
+
+Do not include a trailing slash or `/api/v1`. When adding a custom domain later, update the exact backend allowlist and redeploy as required.
+
+### GitHub integration and preview policy
+
+Keep only one Cloudflare project connected to this repository: `worksphere-webapp`. Delete or disconnect obsolete failed Workers such as `worksphere` and `worksphere-web`; otherwise every pull request receives duplicate Cloudflare status checks and deployment attempts.
+
+Under **Settings > Build**, disable preview/non-production branch deployments and retain automatic production deployment for `main`. The intended flow is:
+
+```text
+pull request -> GitHub Actions CI only
+merge to main -> automatic Render and Cloudflare production deploys
+```
+
+### Redeploy the frontend
+
+Normal deployment is automatic after merging to `main`. To retry manually:
+
+```text
+Cloudflare > Workers & Pages > worksphere-webapp > Deployments
+> Deploy latest commit (or Retry deployment)
+```
+
+Successful logs include `vite building for production`, asset upload from `frontend/dist`, and a successful Wrangler deployment.
+
+### Cloudflare troubleshooting
+
+| Symptom | Cause | Resolution |
+|---|---|---|
+| `Could not read package.json` at `/opt/buildhome/repo/package.json` | Root directory is `/` | Set root directory to `/frontend` under **Settings > Build** |
+| `Failed to match Worker name` | Wrangler name differs from the Cloudflare project | Keep both names as `worksphere-webapp` |
+| `Invalid _redirects configuration` or infinite loop | Legacy Pages `_redirects` file combined with Workers SPA handling | Remove `frontend/public/_redirects`; use `wrangler.jsonc` SPA handling |
+| Multiple Cloudflare checks on every PR | Multiple Workers are connected to the same repository | Keep only `worksphere-webapp` and disable preview builds |
+| Wrangler rejects the Node version | Cloudflare is using an older Node runtime | Set build variable `NODE_VERSION=22.13.0` |
 
 ## 10. End-to-end live verification
 
@@ -300,7 +356,7 @@ Verify in this order:
 
 ```powershell
 Invoke-RestMethod https://<render-service>.onrender.com/actuator/health
-Invoke-WebRequest https://<cloudflare-project>.pages.dev -UseBasicParsing
+Invoke-WebRequest https://worksphere-webapp.<account-subdomain>.workers.dev -UseBasicParsing
 ```
 
 Then use browser developer tools:
@@ -340,7 +396,7 @@ Free-tier database recovery is not a backup strategy. Before storing valuable da
 
 As of November 2026:
 
-- Cloudflare Pages Free supports Git-based deployments and has build/file limits.
+- Cloudflare Workers Free supports Git-based builds and static-asset deployments within current plan limits.
 - Render Free Web Services sleep after 15 idle minutes, use an ephemeral filesystem, and share monthly free instance-hour limits.
 - Render's own Free Postgres expires after 30 days, so it is not selected here.
 - Neon Free provides persistent PostgreSQL with usage and storage limits and can scale idle compute to zero.
@@ -353,11 +409,11 @@ Provider limits change. Re-check official pricing and limit pages before every l
 Implement deployment readiness as a separate reviewed slice:
 
 1. Add the first approved Flyway migration when the first domain slice is ready.
-2. Create the Neon production database and application role.
-3. Deploy Render with production secrets and verify health.
-4. Deploy Cloudflare Pages with the public backend API URL.
-5. Update Render's `FRONTEND_ORIGIN` to the final Cloudflare URL.
-6. Run and document the live smoke test.
+2. Maintain Neon/Render production secrets and rotate any exposed credential immediately.
+3. Verify Render health after each backend deployment.
+4. Keep only the `worksphere-webapp` Cloudflare project connected to GitHub.
+5. Update Render's `FRONTEND_ORIGIN` whenever the frontend origin changes.
+6. Run and document a live frontend/API/database smoke test.
 
 Do not place real provider credentials in a commit while completing this milestone.
 
@@ -365,8 +421,9 @@ Do not place real provider credentials in a commit while completing this milesto
 
 - [GitHub Actions billing and usage](https://docs.github.com/en/actions/concepts/billing-and-usage)
 - [GitHub deployment environments](https://docs.github.com/en/actions/concepts/workflows-and-actions/deployment-environments)
-- [Cloudflare Pages Git integration](https://developers.cloudflare.com/pages/configuration/git-integration/)
-- [Cloudflare Pages limits](https://developers.cloudflare.com/pages/platform/limits/)
+- [Cloudflare Workers Builds configuration](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/)
+- [Cloudflare Workers Static Assets](https://developers.cloudflare.com/workers/static-assets/)
+- [Cloudflare SPA routing](https://developers.cloudflare.com/workers/static-assets/routing/single-page-application/)
 - [Render Web Services](https://render.com/docs/web-services)
 - [Render free service limitations](https://render.com/docs/free)
 - [Render Docker deployment](https://render.com/docs/docker)

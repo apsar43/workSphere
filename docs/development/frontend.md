@@ -18,6 +18,7 @@ This guide documents the WorkSphere frontend foundation, why each tool is presen
 | User Event | 14.6.9 | Realistic test interactions |
 | ESLint | 9.39.5 | Static analysis |
 | Prettier | 3.9.10 | Consistent formatting |
+| Wrangler | 4.160.0 | Cloudflare Worker static-assets deployment |
 
 The complete dependency tree is pinned by `frontend/package-lock.json`. Use `npm ci` in CI and when reproducing the lockfile exactly.
 
@@ -39,6 +40,7 @@ frontend/
 │   └── types/        Shared TypeScript types when needed
 ├── eslint.config.js
 ├── vite.config.ts
+├── wrangler.jsonc
 ├── tsconfig*.json
 ├── package.json
 └── package-lock.json
@@ -246,6 +248,8 @@ CI uses the non-mutating command:
 npm run format:check
 ```
 
+`npm run test:coverage` generates the HTML report under `frontend/coverage/` and enforces the current global minimums: 80% statements, functions, and lines, plus 70% branches. Coverage is a regression gate, not a replacement for authentication and authorization scenario testing.
+
 ## 11. Environment variables
 
 Copy the example only when an override is needed:
@@ -258,11 +262,40 @@ Current variable:
 
 ```dotenv
 VITE_API_BASE_URL=/api/v1
+VITE_DEV_API_ORIGIN=http://localhost:8080
 ```
+
+During `npm run dev`, Vite proxies `/api/*` to `VITE_DEV_API_ORIGIN`, which defaults to `http://localhost:8080`. Start Spring Boot before testing registration or login. When IntelliJ runs the backend on another port, override only the local file—for example, set `VITE_DEV_API_ORIGIN=http://localhost:8081` in `.env.local`. This preserves the same-origin browser contract locally and avoids weakening cookie settings for development.
 
 All `VITE_*` variables are compiled into browser code. Never place passwords, API secrets, session identifiers, private keys, or database credentials in them.
 
-Read environment configuration through `src/services/environment.ts` rather than accessing `import.meta.env` throughout the application.
+Read environment configuration through `src/config/environment.ts` rather than accessing `import.meta.env` throughout the application. API calls use the shared Axios instance in `src/services/httpClient.ts`; its interceptors consistently apply credentials, timeouts, CSRF headers, and safe backend-error normalization. Feature API modules such as `authApi.ts` remain typed and contain endpoint semantics rather than transport configuration.
+
+Production uses the same-origin `/api/v1` path. The Cloudflare Worker proxies `/api/*` to the allowlisted Render origin, so production session and CSRF cookies remain first-party:
+
+```dotenv
+VITE_API_BASE_URL=/api/v1
+```
+
+### Cloudflare Worker deployment
+
+`wrangler.jsonc` publishes `dist`, enables single-page-application fallback routing, and runs `worker/index.ts` first for `/api/*`. The Worker forwards only the fixed API path to the configured Render origin, strips untrusted forwarding headers, enforces the declared-body limit, preserves response cookies, and disables API caching. The configured name must exactly match the Cloudflare project: `worksphere-webapp`.
+
+Cloudflare runs these commands from root directory `/frontend`:
+
+```text
+Build command: npm run build
+Deploy command: npx wrangler deploy
+```
+
+Run a local deployment validation without uploading when using Node 22.12 or newer:
+
+```powershell
+npm run build
+npx wrangler deploy --dry-run
+```
+
+Do not add `public/_redirects`. That file belongs to the older Pages routing model and conflicts with the Worker's `not_found_handling: single-page-application` configuration.
 
 ## 12. Full local frontend verification
 

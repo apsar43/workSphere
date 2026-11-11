@@ -1,9 +1,11 @@
 package com.worksphere.shared.web;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.worksphere.identity.application.RateLimitExceededException;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import java.time.Clock;
@@ -49,11 +51,25 @@ class GlobalExceptionHandlerTest {
         .andExpect(jsonPath("$.violations[0].field").value("name"));
   }
 
+  @Test
+  void returnsRetryAfterForRateLimitedLogin() throws Exception {
+    mockMvc
+        .perform(post("/rate-limit-test"))
+        .andExpect(status().isTooManyRequests())
+        .andExpect(header().string("Retry-After", "900"))
+        .andExpect(jsonPath("$.message").value("Too many sign-in attempts. Try again later."));
+  }
+
   @RestController
   static class ValidationTestController {
 
     @PostMapping("/validation-test")
     void validate(@Valid @RequestBody ValidationRequest request) {}
+
+    @PostMapping("/rate-limit-test")
+    void rateLimited() {
+      throw new RateLimitExceededException(900);
+    }
   }
 
   record ValidationRequest(@NotBlank String name) {}

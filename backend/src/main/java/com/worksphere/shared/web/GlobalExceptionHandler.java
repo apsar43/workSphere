@@ -1,5 +1,7 @@
 package com.worksphere.shared.web;
 
+import com.worksphere.identity.application.AuthenticationException;
+import com.worksphere.identity.application.RateLimitExceededException;
 import jakarta.servlet.http.HttpServletRequest;
 import java.time.Clock;
 import java.util.List;
@@ -38,6 +40,27 @@ public class GlobalExceptionHandler {
       IllegalArgumentException exception, HttpServletRequest request) {
     return response(
         HttpStatus.BAD_REQUEST, exception.getMessage(), request.getRequestURI(), List.of());
+  }
+
+  @ExceptionHandler(AuthenticationException.class)
+  ResponseEntity<ApiErrorResponse> handleAuthentication(
+      AuthenticationException exception, HttpServletRequest request) {
+    return response(
+        HttpStatus.UNAUTHORIZED, exception.getMessage(), request.getRequestURI(), List.of());
+  }
+
+  @ExceptionHandler(RateLimitExceededException.class)
+  ResponseEntity<ApiErrorResponse> handleRateLimit(
+      RateLimitExceededException exception, HttpServletRequest request) {
+    ResponseEntity<ApiErrorResponse> response =
+        response(
+            HttpStatus.TOO_MANY_REQUESTS,
+            exception.getMessage(),
+            request.getRequestURI(),
+            List.of());
+    return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+        .header("Retry-After", Long.toString(exception.retryAfterSeconds()))
+        .body(response.getBody());
   }
 
   private ResponseEntity<ApiErrorResponse> response(

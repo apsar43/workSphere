@@ -487,8 +487,10 @@ Initial browser strategy, detailed by [ADR-005](../adr/ADR-005-server-managed-br
 - Session expiration.
 - Session revocation.
 - Session rotation where appropriate.
+- PostgreSQL-backed per-account and per-source login throttling across instances.
+- Sliding idle renewal throttled to one database write per configured touch interval and capped by absolute expiry.
 
-Timeout values, rate limits, CSRF mechanism and deployment-specific cookie origin policy remain subject to human approval.
+ADR-011 records the implemented timeout, rate-limit, CSRF, and cookie defaults. Production telemetry may tighten them through typed environment configuration; weakening them requires security review.
 
 Avoid exposing long-lived credentials to JavaScript.
 
@@ -629,6 +631,8 @@ The outbox is introduced with the first reliable asynchronous verification, rese
 
 ```mermaid
 erDiagram
+    USERS ||--o| PASSWORD_CREDENTIALS : authenticates_locally
+    USERS ||--o{ EXTERNAL_IDENTITIES : authenticates_externally
     USERS ||--o{ MEMBERSHIPS : has
     ORGANIZATIONS ||--o{ MEMBERSHIPS : contains
     ORGANIZATIONS ||--o{ INVITATIONS : creates
@@ -680,7 +684,7 @@ These components are intentionally not part of the first implementation.
 Potential responsibilities:
 
 - Caching.
-- Distributed rate limiting.
+- High-volume edge rate limiting if PostgreSQL-backed authentication throttling becomes insufficient.
 - Presence.
 - Temporary state.
 - Selected coordination operations.
@@ -1437,7 +1441,7 @@ All endpoints must implement the applicable authentication, authorization, valid
 
 The authoritative logical and physical baseline is [the database design and ERD](../er-diagram/erd.md). It defines normalized identity keys, lifecycle fields, global permissions, organization roles, tenant-owned membership actors, composite foreign keys, multi-assignee tasks, same-project parent-task integrity, audit controls, outbox behavior, delete rules and index candidates.
 
-No SQL migration exists yet. SQL examples are intentionally not duplicated here so the system design cannot drift from the physical baseline. After human approval, Flyway migrations will be created incrementally and tested with PostgreSQL Testcontainers.
+Flyway V1 implements the identity foundation: users, optional password credentials, external identities, opaque sessions, verification/reset tokens, and OAuth authorization transactions. V2 adds shared login-rate-limit state. SQL examples are intentionally not duplicated here so the system design cannot drift from the physical baseline. Remaining domain migrations will be created incrementally after review and tested with PostgreSQL Testcontainers.
 
 ---
 
