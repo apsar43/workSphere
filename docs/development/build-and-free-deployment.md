@@ -54,14 +54,19 @@ Already available:
 
 Required before the first live deployment:
 
-- create a production backend `Dockerfile`
-- make Spring Boot use the host-provided `PORT`
-- add an explicit production CORS allowlist for the deployed frontend origin
-- set the frontend production `VITE_API_BASE_URL` to the public backend URL
 - create and test the first Flyway migration before adding entities
 - decide whether direct or pooled Neon connections are appropriate for Hibernate/HikariCP
 - configure secret values only in Render/Neon, never in Git
 - verify authentication, cookies, CSRF, trusted proxy, and HTTPS behavior before implementing login
+
+Deployment foundation already included:
+
+- multi-stage Java 21 backend `Dockerfile` running as a non-root user
+- host-provided `PORT` support with local port 8080 as the fallback
+- environment-specific exact-origin CORS configuration
+- frontend `VITE_API_BASE_URL` support
+- Cloudflare Pages SPA route fallback
+- production container build verification in GitHub Actions
 
 Do not deploy the current scaffold as if it were a completed product. At this stage, the deployment proves the delivery pipeline and health connectivity only.
 
@@ -223,7 +228,7 @@ Before using a pooled Neon endpoint with Hibernate/HikariCP, test Flyway migrati
 
 ## 8. Deploy the Spring Boot backend to Render
 
-The backend deployment will use a repository Dockerfile. The Dockerfile is not created by this guide; it should be added and locally tested as a reviewed implementation task.
+The backend deployment uses `backend/Dockerfile`, which builds the Maven application in one image stage and runs it as a non-root user in a smaller Java 21 runtime stage.
 
 After the Dockerfile and production configuration are committed:
 
@@ -347,13 +352,12 @@ Provider limits change. Re-check official pricing and limit pages before every l
 
 Implement deployment readiness as a separate reviewed slice:
 
-1. Add and test a multi-stage Java 21 backend Dockerfile.
-2. Add `PORT` support and production CORS configuration.
-3. Add frontend environment validation and production API URL handling.
-4. Add the first approved Flyway migration when the first domain slice is ready.
-5. Add container build verification to GitHub Actions.
-6. Deploy Neon, then Render, then Cloudflare Pages.
-7. Run and document the live smoke test.
+1. Add the first approved Flyway migration when the first domain slice is ready.
+2. Create the Neon production database and application role.
+3. Deploy Render with production secrets and verify health.
+4. Deploy Cloudflare Pages with the public backend API URL.
+5. Update Render's `FRONTEND_ORIGIN` to the final Cloudflare URL.
+6. Run and document the live smoke test.
 
 Do not place real provider credentials in a commit while completing this milestone.
 

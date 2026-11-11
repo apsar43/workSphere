@@ -69,3 +69,6 @@ jobs:
         run: ./mvnw --batch-mode --no-transfer-progress test
       - name: Run PostgreSQL integration tests and package
         run: ./mvnw --batch-mode --no-transfer-progress verify -DskipUnitTests=true
+      - name: Build production container
+        working-directory: .
+        run: docker build --file backend/Dockerfile backend
