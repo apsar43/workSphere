@@ -6,3 +6,18 @@ spring:
     url: ${DB_URL:jdbc:postgresql://localhost:5432/worksphere}
     username: ${DB_USERNAME:worksphere}
     password: ${DB_PASSWORD:worksphere_local_only}
+
+worksphere:
+  security:
+    auto-verify-registration: true
+    cookies:
+      secure: false
+    session:
+      idle-timeout: 30m
+      absolute-timeout: 12h
+      touch-interval: 5m
+    login-rate-limit:
+      account-maximum-attempts: 5
+      source-maximum-attempts: 100
+      window: 10m
+      block-duration: 15m

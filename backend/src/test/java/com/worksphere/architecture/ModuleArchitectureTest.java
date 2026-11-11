@@ -29,6 +29,18 @@ class ModuleArchitectureTest {
   }
 
   @Test
+  void applicationCodeDoesNotDependOnInfrastructureOrPresentation() {
+    noClasses()
+        .that()
+        .resideInAPackage("com.worksphere..application..")
+        .should()
+        .dependOnClassesThat()
+        .resideInAnyPackage("com.worksphere..infrastructure..", "com.worksphere..presentation..")
+        .allowEmptyShould(true)
+        .check(classes);
+  }
+
+  @Test
   void modulesDoNotDependOnOtherModulesInternals() {
     for (String module : MODULES) {
       String[] otherModules =

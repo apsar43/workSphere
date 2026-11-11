@@ -2,15 +2,15 @@
 
 ## Entity relationship diagram and physical-design baseline
 
-**Version:** 1.1 review baseline
+**Version:** 1.2 identity implementation baseline
 
-**Status:** Proposed; no migrations have been generated
+**Status:** Identity foundation implemented in Flyway V1; remaining business domains are proposed
 
 **Database:** PostgreSQL
 
 **Multi-tenancy:** Shared database and shared schema
 
-This document is authoritative for Release 1 tables, keys and tenant-aware relationships. It implements the proposed decisions in the [ADR index](../adr/README.md). Human approval is required before migrations are created.
+This document is authoritative for Release 1 tables, keys and tenant-aware relationships. It implements the decisions in the [ADR index](../adr/README.md). The identity subset is represented by `V1__identity_authentication_foundation.sql`; human approval remains required before migrations for the remaining business domains are created.
 
 ## 1. Design direction
 
@@ -29,6 +29,8 @@ This document is authoritative for Release 1 tables, keys and tenant-aware relat
 ```mermaid
 erDiagram
     USERS ||--o{ USER_SESSIONS : authenticates
+    USERS ||--o| PASSWORD_CREDENTIALS : authenticates_locally
+    USERS ||--o{ EXTERNAL_IDENTITIES : authenticates_externally
     USERS ||--o{ EMAIL_VERIFICATION_TOKENS : verifies
     USERS ||--o{ PASSWORD_RESET_TOKENS : resets
     USERS ||--o{ MEMBERSHIPS : joins
@@ -66,7 +68,6 @@ erDiagram
 | id | UUID | PK |
 | email | VARCHAR(320) | NOT NULL |
 | normalized_email | VARCHAR(320) | NOT NULL, UNIQUE |
-| password_hash | VARCHAR(255) | NOT NULL |
 | first_name | VARCHAR(100) | NOT NULL |
 | last_name | VARCHAR(100) | NOT NULL |
 | display_name | VARCHAR(200) | NULL |
@@ -77,6 +78,18 @@ erDiagram
 | version | BIGINT | NOT NULL |
 
 Email normalization is application-owned and versioned: trim surrounding whitespace, reject invalid Unicode/control characters, split at the final `@`, lowercase the domain using locale-independent rules, and initially lowercase the local part for WorkSphere matching. Preserve the submitted display email. Do not add provider-specific dot or plus-address rules. Suggested statuses: `PENDING_VERIFICATION`, `ACTIVE`, `LOCKED`, `DISABLED`, `ERASURE_PENDING`, `ANONYMIZED`.
+
+### `password_credentials`
+
+Contains `user_id UUID PK FK -> users.id`, `password_hash VARCHAR(255) NOT NULL`, `created_at TIMESTAMPTZ NOT NULL`, and `changed_at TIMESTAMPTZ NOT NULL`. A row is optional because an account may use only an external identity. Password hashes use the versioned Argon2id policy; plaintext passwords are never persisted or logged.
+
+### `external_identities`
+
+Contains `id UUID PK`, `user_id UUID NOT NULL FK`, `provider VARCHAR(50) NOT NULL`, `provider_subject VARCHAR(255) NOT NULL`, nullable `provider_email`, `created_at`, and nullable `last_login_at`. `UNIQUE (provider, provider_subject)` is the durable external identity key. Provider email is metadata and never silently links an existing local account.
+
+### `oauth_authorization_transactions`
+
+Contains `id UUID PK`, provider, hashed state/nonce/browser binding, encrypted PKCE verifier, status, expiry, consumed timestamp, and creation timestamp. It is short-lived and single-use. The table exists in V1 so Google OIDC can be added without weakening the callback transaction model; the provider exchange is not implemented in the current slice.
 
 ### `user_sessions`
 
@@ -96,9 +109,24 @@ Email normalization is application-owned and versioned: trim surrounding whitesp
 
 Check `idle_expires_at <= absolute_expires_at`. Authentication requires both expiries in the future and `revoked_at IS NULL`. The raw opaque token is returned only in the protected cookie and is never persisted or logged. See [ADR-005](../adr/ADR-005-server-managed-browser-sessions.md).
 
+Active requests renew `idle_expires_at` no more than once per configured touch interval and never beyond `absolute_expires_at`. The update rechecks revocation and both expiries so an expired or revoked session cannot be revived.
+
+### `login_rate_limits`
+
+| Column | Type | Constraints |
+|---|---|---|
+| scope | VARCHAR(20) | PK component; `ACCOUNT` or `SOURCE` |
+| key_hash | CHAR(64) | PK component; scoped SHA-256 digest |
+| failure_count | INTEGER | NOT NULL, non-negative |
+| window_started_at | TIMESTAMPTZ | NOT NULL |
+| blocked_until | TIMESTAMPTZ | NULL |
+| updated_at | TIMESTAMPTZ | NOT NULL |
+
+The table is the cross-instance authority for login throttling. It stores neither normalized email nor source address. Successful authentication deletes the account entry only; source pressure is retained. An index on `updated_at` supports future scheduled cleanup of stale, unblocked rows.
+
 ### `email_verification_tokens` and `password_reset_tokens`
 
-Both contain `id UUID PK`, `user_id UUID NOT NULL FK`, `token_hash VARCHAR(255) NOT NULL UNIQUE`, `expires_at TIMESTAMPTZ NOT NULL`, `consumed_at TIMESTAMPTZ NULL`, and `created_at TIMESTAMPTZ NOT NULL`.
+Both contain `id UUID PK`, `user_id UUID NOT NULL FK`, `token_hash CHAR(64) NOT NULL UNIQUE`, `expires_at TIMESTAMPTZ NOT NULL`, `consumed_at TIMESTAMPTZ NULL`, `invalidated_at TIMESTAMPTZ NULL`, and `created_at TIMESTAMPTZ NOT NULL`.
 
 Consumption is one atomic conditional update requiring the matching hash, `consumed_at IS NULL`, and `expires_at > now()`. A unique constraint alone does not enforce single-use concurrency.
 
@@ -248,14 +276,14 @@ Validate candidates with PostgreSQL query plans. PostgreSQL does not automatical
 
 ## 12. Migration and test gates
 
-No migrations are created by this documentation task. After human approval, implement small reviewed migrations in dependency order. Never edit an applied shared migration.
+Flyway V1 implements the identity foundation and V2 adds distributed login-rate-limit state. After human approval, implement the remaining domains as small reviewed migrations in dependency order. Never edit an applied shared migration; corrections require a new migration.
 
 PostgreSQL Testcontainers must prove cross-tenant reads/writes are denied; invalid cross-tenant role/project/task/actor relationships fail; task parents cannot cross project/tenant; inactive memberships lose access; last-owner protection survives concurrency; tokens/invitations are single-use; revoked/expired sessions fail across instances; outbox writes are atomic and retries idempotent; and application credentials cannot mutate audit data.
 
 ## 13. Human approvals still required
 
 - ADR acceptance and final permission catalogue.
-- Session timeouts, concurrent-session limit, rate limits and CSRF mechanism.
+- Concurrent-session limit and future tuning of session/rate-limit values; implemented defaults and CSRF behavior are recorded in ADR-011.
 - Invitation lifetime and reactivation behavior.
 - Reserved slugs and exact normalization implementation.
 - Owner-transfer authorization and emergency recovery.

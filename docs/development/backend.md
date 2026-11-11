@@ -75,11 +75,13 @@ The current backend contains:
 - `UtcClockService` and `TimeConfiguration`: injectable UTC time for deterministic tests.
 - `ApiErrorResponse`: consistent API error structure.
 - `GlobalExceptionHandler`: validation and illegal-argument response foundation.
-- `FoundationSecurityConfiguration`: exposes health/info and denies other requests until authentication is implemented.
+- `SecurityConfiguration` plus typed `WorkSphereSecurityProperties`/`WorkSphereCorsProperties`: defines the reviewed session, CSRF, CORS, and endpoint policy.
+- Identity application services depend on the `IdentityStore` application port; the JDBC `IdentityRepository` is its infrastructure adapter.
+- `AuthenticationController` and `SessionAuthenticationFilter`: browser authentication endpoints and opaque-session authentication boundary.
 - Actuator health and info exposure without sensitive details.
-- Flyway directory with no business migrations.
+- Flyway V1 identity migration and V2 distributed login-throttling migration with PostgreSQL integration coverage.
 
-No user, organization, project, task, role, session, JWT, or business controller is implemented.
+Registration, local login, logout, current-user lookup, and opaque database-backed sessions are implemented. Organization, project, task, role/RBAC, recovery email delivery, and Google OIDC remain future vertical slices. WorkSphere intentionally does not use browser JWT sessions.
 
 ## 5. Maven Wrapper
 
@@ -294,6 +296,8 @@ Run the complete build including PostgreSQL Testcontainers:
 .\mvnw.cmd verify
 ```
 
+`verify` also generates the JaCoCo backend coverage report at `backend/target/site/jacoco/index.html` and enforces global minimums of 60% lines and 50% branches. Authentication tests cover registration enumeration behavior, concurrent duplicate handling, generic login failures, opaque-session creation, expiry values, token hashing, controller cookie behavior, Google-disabled behavior, session-filter authentication, and logout revocation.
+
 Run only the PostgreSQL integration test while skipping unit-test execution:
 
 ```powershell
@@ -335,7 +339,7 @@ The migration directory is:
 backend/src/main/resources/db/migration/
 ```
 
-It currently contains only `.gitkeep`. No business migration has been created.
+It contains `V1__identity_authentication_foundation.sql`, which creates users, optional password credentials, external identities, opaque sessions, verification/reset tokens, and OAuth authorization transactions. `V2__login_rate_limiting.sql` adds the shared account/source failure counters used across backend instances.
 
 Rules:
 
@@ -344,7 +348,7 @@ Rules:
 - Never use `update`, `create`, or `create-drop` for production schema management.
 - Never edit a migration already applied to a shared environment.
 - Integration tests must use PostgreSQL, not H2.
-- Create the first migration only after the relevant ADR and ERD slice is approved.
+- Create each subsequent migration only after the relevant ADR and ERD slice is approved.
 
 ## 13. Error response foundation
 
@@ -359,18 +363,21 @@ The common response contains:
 
 Do not expose stack traces, SQL errors, internal class names, authorization details, cookies, or secrets.
 
-## 14. Temporary foundation security
+## 14. Identity security foundation
 
-Spring Security is on the classpath, but authentication is not implemented.
+Spring Security now implements the first local browser-authentication slice from ADR-011.
 
 Current behavior:
 
 - `/actuator/health` and `/actuator/info` are public.
-- other requests are denied.
-- no generated development user is created.
-- no JWT, session, login, registration, or RBAC code exists.
+- registration, login, logout, CSRF bootstrap, and `/api/v1/users/me` are implemented.
+- passwords use Argon2id and raw opaque session tokens are represented in PostgreSQL only by SHA-256 hashes.
+- browser sessions use `HttpOnly`, host-only cookies; state-changing requests require the separate CSRF cookie/header pair.
+- local registration auto-verifies accounts only in the `local` profile. Production keeps new accounts pending until the email-verification workflow is completed.
+- PostgreSQL-backed account/source login throttling and sliding idle-session renewal are implemented. Google OIDC, password recovery, audit events, the concurrent-session cap, and organization RBAC remain later slices; the Google UI entry point intentionally reports unavailable until provider support is configured and implemented.
+- all routes not explicitly allowed or authenticated remain denied.
 
-Replace this foundation deliberately during the approved server-managed-session milestone. Do not add JWT browser tokens as a shortcut.
+Do not replace the opaque browser session with JWTs in browser storage. Extend this foundation incrementally under ADR-011.
 
 ## 15. Full local backend verification
 
@@ -391,7 +398,7 @@ Then start the real local application and verify health:
 Invoke-RestMethod http://localhost:8080/actuator/health
 ```
 
-Expected startup evidence includes a successful PostgreSQL connection, Flyway validation, an initialized JPA entity manager, and Tomcat listening on port 8080. Until the first business migration is approved, Flyway's `No migrations found` warning is expected and is not a startup failure.
+Expected startup evidence includes a successful PostgreSQL connection, Flyway migrations through V2, an initialized JPA entity manager, and Tomcat listening on port 8080.
 
 ## 16. Adding a backend capability later
 

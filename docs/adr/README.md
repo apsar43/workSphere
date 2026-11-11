@@ -14,6 +14,7 @@ ADRs are numbered, immutable after acceptance except for status and supersession
 | [ADR-008](ADR-008-transactional-outbox-strategy.md) | Transactional outbox introduction strategy | Proposed |
 | [ADR-009](ADR-009-mvp-scope.md) | MVP scope and deferred features | Proposed |
 | [ADR-010](ADR-010-pragmatic-clean-architecture.md) | Pragmatic Clean Architecture | Proposed |
+| [ADR-011](ADR-011-browser-authentication-and-google-oidc.md) | Browser authentication and Google OpenID Connect | Accepted for incremental implementation |
 
 Approval requires a human architecture review. Creating these records does not make them accepted.
 

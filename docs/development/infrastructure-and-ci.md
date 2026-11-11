@@ -219,8 +219,11 @@ It runs on:
 5. Compile.
 6. Run unit/context/architecture tests.
 7. Run package and PostgreSQL Testcontainers integration tests.
+8. Build the production backend Docker image.
 
 The integration test is not silently skipped. GitHub-hosted Linux runners provide the Docker environment required by Testcontainers.
+
+The frontend and backend jobs can appear twice for a feature branch with an open pull request: once for the branch `push` event and once for the `pull_request` event. Both executions use the same quality gates. Cloudflare preview builds are disabled separately in its dashboard so pull requests do not deploy the frontend.
 
 ## 9. Troubleshooting Docker
 
