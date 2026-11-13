@@ -204,6 +204,56 @@ a:focus-visible {
   color: #a2a8ba;
 }
 
+.password-input-wrap {
+  position: relative;
+  display: block;
+}
+
+.password-field {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.password-input-wrap input {
+  padding-right: 2.75rem;
+}
+
+.password-visibility-button {
+  position: absolute;
+  right: 0.2rem;
+  bottom: 0.55rem;
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  padding: 0.3rem;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  color: #6b718a;
+  background: transparent;
+  cursor: pointer;
+}
+
+.password-visibility-button:hover {
+  color: #5147a4;
+  background: #f0effb;
+}
+
+.password-visibility-button:focus-visible {
+  outline: 2px solid #6556bd;
+  outline-offset: 2px;
+}
+
+.password-visibility-button svg {
+  width: 1.25rem;
+  height: 1.25rem;
+  fill: none;
+  stroke: currentcolor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
 .auth-submit,
 .google-button {
   min-height: 3rem;

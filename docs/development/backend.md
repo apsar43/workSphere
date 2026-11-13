@@ -136,6 +136,14 @@ $env:DB_PASSWORD = "your-local-password"
 
 Do not place production credentials in these files.
 
+The local profile also enables Spring Boot Docker Compose support. Starting the backend from IntelliJ or with the Maven Wrapper starts the `postgres` service from `../infrastructure/docker/compose.yml` automatically. Docker Desktop must already be running. The lifecycle is `start-only`, so stopping or restarting Spring Boot does not repeatedly stop PostgreSQL.
+
+Disable automatic Compose startup when connecting to an already managed database:
+
+```powershell
+$env:LOCAL_DOCKER_COMPOSE_ENABLED = "false"
+```
+
 ### Production profile
 
 `application-production.yml` intentionally provides no credential defaults. Start production mode only after supplying configuration through an approved secret-management mechanism:
@@ -156,13 +164,10 @@ Missing required production configuration must cause startup to fail clearly.
 
 ## 7. Start the backend
 
-Start local PostgreSQL first. From the repository root:
+With Docker Desktop running, start the backend from the `backend` directory. PostgreSQL starts automatically:
 
 ```powershell
-Set-Location infrastructure/docker
-docker compose up -d --wait
-
-Set-Location ../../backend
+Set-Location backend
 .\mvnw.cmd spring-boot:run
 ```
 

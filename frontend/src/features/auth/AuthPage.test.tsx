@@ -27,6 +27,24 @@ describe('AuthPage', () => {
     expect(screen.getByRole('link', { name: /continue with google/i })).toBeInTheDocument();
   });
 
+  it('lets the user reveal and hide the password accessibly', async () => {
+    const user = userEvent.setup();
+    const router = createMemoryRouter([{ path: '/login', element: <AuthPage mode="login" /> }], {
+      initialEntries: ['/login'],
+    });
+
+    render(<RouterProvider router={router} />);
+
+    const password = screen.getByLabelText(/^password$/i);
+    expect(password).toHaveAttribute('type', 'password');
+
+    await user.click(screen.getByRole('button', { name: /show password/i }));
+    expect(password).toHaveAttribute('type', 'text');
+
+    await user.click(screen.getByRole('button', { name: /hide password/i }));
+    expect(password).toHaveAttribute('type', 'password');
+  });
+
   it('confirms registration and safely resets the submitted form', async () => {
     registerMock.mockResolvedValueOnce({ message: 'Registration received.' });
     const user = userEvent.setup();

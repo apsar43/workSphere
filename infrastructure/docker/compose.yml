@@ -19,6 +19,45 @@ services:
       retries: 12
       start_period: 10s
 
+  backend:
+    profiles: ["application"]
+    build:
+      context: ../../backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      SPRING_PROFILES_ACTIVE: local
+      SPRING_DOCKER_COMPOSE_ENABLED: "false"
+      DB_URL: jdbc:postgresql://postgres:5432/worksphere
+      DB_USERNAME: ${POSTGRES_USER:-worksphere}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-worksphere_local_only}
+      FRONTEND_ORIGIN: http://localhost:${FRONTEND_PORT:-5173}
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  frontend:
+    profiles: ["application"]
+    build:
+      context: ../../frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: /api/v1
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-5173}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
 volumes:
   worksphere-postgres-data:
     name: worksphere-postgres-data

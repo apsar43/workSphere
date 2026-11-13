@@ -12,6 +12,8 @@ import java.util.HexFormat;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -23,6 +25,8 @@ import org.springframework.stereotype.Service;
     havingValue = "true",
     matchIfMissing = true)
 public class AuthenticationService {
+
+  private static final Logger LOGGER = LoggerFactory.getLogger(AuthenticationService.class);
 
   public record LoginResult(AuthenticatedUser user, String sessionToken) {}
 
@@ -75,7 +79,17 @@ public class AuthenticationService {
 
   public LoginResult login(String email, String password, String ipAddress, String userAgent) {
     String normalizedEmail = normalizeEmail(email);
-    loginRateLimiter.checkAllowed(normalizedEmail, ipAddress);
+    String accountFingerprint = securityFingerprint("account:" + normalizedEmail);
+    String sourceFingerprint = securityFingerprint("source:" + ipAddress);
+    try {
+      loginRateLimiter.checkAllowed(normalizedEmail, ipAddress);
+    } catch (RateLimitExceededException exception) {
+      LOGGER.warn(
+          "Login rate limited accountFingerprint={} sourceFingerprint={}",
+          accountFingerprint,
+          sourceFingerprint);
+      throw exception;
+    }
     Optional<IdentityStore.CredentialUser> candidate =
         repository.findCredentialUser(normalizedEmail);
     String hash =
@@ -83,6 +97,10 @@ public class AuthenticationService {
     boolean passwordMatches = passwordEncoder.matches(password, hash);
     if (candidate.isEmpty() || !passwordMatches || !candidate.get().status().equals("ACTIVE")) {
       loginRateLimiter.recordFailure(normalizedEmail, ipAddress);
+      LOGGER.warn(
+          "Login rejected accountFingerprint={} sourceFingerprint={}",
+          accountFingerprint,
+          sourceFingerprint);
       throw new AuthenticationException("Email or password is incorrect.");
     }
     IdentityStore.CredentialUser credential = candidate.get();
@@ -99,6 +117,11 @@ public class AuthenticationService {
         now.plus(sessionPolicy.absoluteTimeout()),
         ipAddress,
         userAgent);
+    LOGGER.info(
+        "Login succeeded userId={} accountFingerprint={} sourceFingerprint={}",
+        credential.user().id(),
+        accountFingerprint,
+        sourceFingerprint);
     return new LoginResult(credential.user(), rawToken);
   }
 
@@ -140,5 +163,9 @@ public class AuthenticationService {
 
   private String normalizeEmail(String email) {
     return email.trim().toLowerCase(Locale.ROOT);
+  }
+
+  private String securityFingerprint(String value) {
+    return hashToken(value).substring(0, 12);
   }
 }

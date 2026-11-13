@@ -10,6 +10,7 @@ interface AuthPageProps {
 export function AuthPage({ mode }: AuthPageProps) {
   const navigate = useNavigate();
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string>();
   const [message, setMessage] = useState<string>();
 
@@ -100,24 +101,45 @@ export function AuthPage({ mode }: AuthPageProps) {
                 />
               </label>
 
-              <label>
-                <span className="field-label-row">
-                  Password
+              <div className="password-field">
+                <div className="field-label-row">
+                  <label htmlFor="password">Password</label>
                   {isLogin ? (
                     <span className="muted-link" aria-disabled="true">
                       Forgot password?
                     </span>
                   ) : null}
+                </div>
+                <span className="password-input-wrap">
+                  <input
+                    autoComplete={isLogin ? 'current-password' : 'new-password'}
+                    id="password"
+                    minLength={isLogin ? undefined : 12}
+                    name="password"
+                    placeholder={isLogin ? 'Enter your password' : 'At least 12 characters'}
+                    required
+                    type={showPassword ? 'text' : 'password'}
+                  />
+                  <button
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    aria-pressed={showPassword}
+                    className="password-visibility-button"
+                    onClick={() => setShowPassword((visible) => !visible)}
+                    type="button"
+                  >
+                    {showPassword ? (
+                      <svg aria-hidden="true" viewBox="0 0 24 24">
+                        <path d="M3 3l18 18M10.6 10.7a2 2 0 002.7 2.7M9.9 4.2A10.7 10.7 0 0112 4c5.5 0 9 5.5 9 5.5a15.8 15.8 0 01-3 3.6M6.2 6.2C4.2 7.6 3 9.5 3 9.5S6.5 15 12 15c1 0 2-.2 2.8-.5" />
+                      </svg>
+                    ) : (
+                      <svg aria-hidden="true" viewBox="0 0 24 24">
+                        <path d="M3 12s3.5-5.5 9-5.5 9 5.5 9 5.5-3.5 5.5-9 5.5S3 12 3 12z" />
+                        <circle cx="12" cy="12" r="2.5" />
+                      </svg>
+                    )}
+                  </button>
                 </span>
-                <input
-                  autoComplete={isLogin ? 'current-password' : 'new-password'}
-                  minLength={isLogin ? undefined : 12}
-                  name="password"
-                  placeholder={isLogin ? 'Enter your password' : 'At least 12 characters'}
-                  required
-                  type="password"
-                />
-              </label>
+              </div>
 
               {error ? (
                 <p className="form-alert form-alert-error" role="alert">

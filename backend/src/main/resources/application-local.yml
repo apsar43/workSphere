@@ -2,6 +2,14 @@ spring:
   config:
     activate:
       on-profile: local
+  output:
+    ansi:
+      enabled: always
+  docker:
+    compose:
+      enabled: ${LOCAL_DOCKER_COMPOSE_ENABLED:true}
+      file: ${LOCAL_DOCKER_COMPOSE_FILE:../infrastructure/docker/compose.yml}
+      lifecycle-management: start-only
   datasource:
     url: ${DB_URL:jdbc:postgresql://localhost:5432/worksphere}
     username: ${DB_USERNAME:worksphere}

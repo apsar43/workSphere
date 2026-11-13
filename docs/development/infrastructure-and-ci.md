@@ -1,6 +1,6 @@
 # Local Infrastructure and CI Guide
 
-This guide documents the PostgreSQL Compose project, configuration variables, complete local startup sequence, and GitHub Actions pipeline.
+This guide documents the PostgreSQL and full-stack Compose workflows, configuration variables, complete local startup sequence, and GitHub Actions pipeline.
 
 ## 1. Prerequisites
 
@@ -15,7 +15,7 @@ docker info
 
 `docker --version` only proves that the CLI exists. `docker info` must also succeed to prove the Docker Desktop engine is running.
 
-## 2. PostgreSQL Compose configuration
+## 2. Compose configuration
 
 Files:
 
@@ -29,8 +29,24 @@ The Compose project provides:
 - named volume `worksphere-postgres-data`
 - environment-based database name, user, password, and host port
 - safe local defaults only
+- an `application` profile that builds the backend and frontend containers
+- health-ordered startup: PostgreSQL, backend, then frontend
+
+The default Compose model contains only PostgreSQL. This lets Spring Boot safely start the database during a native IntelliJ run without also creating duplicate backend and frontend containers.
 
 ## 3. Start PostgreSQL
+
+### Automatic startup with Spring Boot
+
+Keep Docker Desktop running, then start `WorkSphereApplication` from IntelliJ or run this command from `backend`:
+
+```powershell
+.\mvnw.cmd spring-boot:run
+```
+
+The local Spring profile starts PostgreSQL automatically. Its `start-only` lifecycle leaves the database running when Spring Boot stops, which makes application restarts faster. Set `LOCAL_DOCKER_COMPOSE_ENABLED=false` when automatic startup is not wanted.
+
+### Manual database-only startup
 
 ```powershell
 Set-Location infrastructure/docker
@@ -102,6 +118,8 @@ Compose variables:
 | `POSTGRES_USER` | `worksphere` |
 | `POSTGRES_PASSWORD` | `worksphere_local_only` |
 | `POSTGRES_PORT` | `5432` |
+| `BACKEND_PORT` | `8080` |
+| `FRONTEND_PORT` | `5173` |
 
 Backend variables:
 
@@ -124,6 +142,53 @@ docker compose up -d --wait
 `.env` is ignored. `.env.example` is committed and contains no production secret.
 
 ## 6. Complete local startup
+
+### Native development (recommended while coding)
+
+Prerequisite: Docker Desktop must be running.
+
+Terminal 1 — backend plus automatically managed PostgreSQL:
+
+```powershell
+Set-Location backend
+.\mvnw.cmd spring-boot:run
+```
+
+Terminal 2 — frontend with Vite hot reload:
+
+```powershell
+Set-Location frontend
+npm run dev
+```
+
+### Complete stack in Docker
+
+Stop native Vite and Spring Boot processes before starting this workflow. Otherwise `localhost` can resolve to a native process on IPv6 while Docker publishes the same numeric port on IPv4, producing confusing mixed-stack results.
+
+```powershell
+Set-Location infrastructure/docker
+Copy-Item .env.example .env -ErrorAction SilentlyContinue
+docker compose --profile application up --build -d --wait
+docker compose ps
+```
+
+| Component | URL |
+|---|---|
+| Frontend | `http://localhost:5173` |
+| Backend | `http://localhost:8080` |
+| Backend health | `http://localhost:8080/actuator/health` |
+| PostgreSQL | `localhost:5432` |
+
+The frontend container serves the compiled Vite application through Nginx and proxies `/api/*` to `backend:8080`. The backend container disables nested Spring Boot Compose startup and connects to `postgres:5432` on the internal network.
+
+Follow logs or stop the stack without deleting database data:
+
+```powershell
+docker compose --profile application logs --follow
+docker compose --profile application down
+```
+
+### Manual three-terminal alternative
 
 Terminal 1 — database:
 

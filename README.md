@@ -48,7 +48,7 @@ Spring Boot manages compatible versions of Spring Framework, Spring Security, Fl
 workSphere/
 ├── backend/                 Spring Boot modular monolith
 ├── frontend/                React and TypeScript application shell
-├── infrastructure/docker/   Local PostgreSQL Compose project
+├── infrastructure/docker/   Local PostgreSQL and full-stack Compose project
 ├── docs/                    Architecture, ERD, and proposed ADRs
 └── .github/workflows/       GitHub Actions CI
 ```
@@ -69,22 +69,48 @@ docker compose version
 
 The checked-in Maven Wrapper downloads Maven 3.9.11, so a global Maven installation is optional.
 
-## Local PostgreSQL
+## Local development workflows
 
-The Compose project uses safe local-only defaults. To customize them, copy the example without committing the resulting `.env` file:
+Docker Desktop must be running for both workflows.
+
+### Native frontend and backend
+
+Run the frontend normally:
+
+```powershell
+Set-Location frontend
+npm ci
+npm run dev
+```
+
+Run the backend from IntelliJ or from `backend`:
+
+```powershell
+Set-Location backend
+.\mvnw.cmd spring-boot:run
+```
+
+With the local Spring profile, Spring Boot Compose support automatically starts PostgreSQL from `infrastructure/docker/compose.yml`. Flyway then migrates the database before the application accepts traffic. PostgreSQL uses a named volume, so application restarts do not erase data. `LOCAL_DOCKER_COMPOSE_ENABLED=false` disables this convenience when an externally managed local database is required.
+
+### Complete stack in Docker
+
+The same Compose project can build and start PostgreSQL, the backend, and the frontend:
+
+Stop any native `npm run dev` or IntelliJ backend process first. Native and containerized application processes must not compete for the same host ports.
 
 ```powershell
 Set-Location infrastructure/docker
 Copy-Item .env.example .env
-docker compose up -d --wait
+docker compose --profile application up --build -d --wait
 docker compose ps
-docker compose logs postgres
 ```
+
+Open `http://localhost:5173`. The containerized frontend proxies `/api/*` to the backend across the Compose network. The backend is also exposed at `http://localhost:8080` for diagnostics.
 
 Stop containers without deleting the named database volume:
 
 ```powershell
-docker compose down
+docker compose --profile application down
 ```
 
 Deleting the volume destroys local database data and should only be done deliberately:

@@ -2,12 +2,11 @@ FROM maven:3.9.11-eclipse-temurin-21-alpine AS build
 
 WORKDIR /workspace
 
-COPY .mvn/ .mvn/
-COPY mvnw pom.xml ./
-RUN chmod +x mvnw && ./mvnw --batch-mode --no-transfer-progress dependency:go-offline
+COPY pom.xml ./
+RUN mvn --batch-mode --no-transfer-progress dependency:go-offline
 
 COPY src/ src/
-RUN ./mvnw --batch-mode --no-transfer-progress package -DskipUnitTests=true
+RUN mvn --batch-mode --no-transfer-progress package -DskipUnitTests=true
 
 FROM eclipse-temurin:21-jre-alpine
 
